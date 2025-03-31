@@ -1,0 +1,46 @@
+{
+  "user_id": "alex_chen_456",
+  "personal": {
+      "first_name": "Alex",
+      "last_name": "Chen",
+      "email": "alex.chen@example.com",
+      "phone": "555-123-4567",
+      "linkedin": "https://linkedin.com/in/alexchen"
+  },
+  "documents": {
+      "resume": "resume.pdf",
+      "cover_letter": ""
+  },
+  "location": {
+      "city": "San Francisco",
+      "state": "California",
+      "country": "United States",
+      "is_us": true
+  },
+  "preferences": {
+      "work_authorization": {
+          "us": "Yes",
+          "other": "No, requires sponsorship"
+      },
+      "commute_willingness": "Willing to relocate"
+  },
+  "education": [
+      {
+          "school": "University of California, Berkeley",
+          "degree": "Bachelor of Science",
+          "discipline": "Computer Science",
+          "grad_year": "2020",
+          "priority": 20
+      }
+  ],
+  "diversity": {
+      "gender": "Male",
+      "race": "White",
+      "hispanic": "No",
+      "veteran": "No",
+      "disability": "No"
+  },
+  "custom_questions": {
+      "minimum_salary_expectation": "90,000"
+  }
+}

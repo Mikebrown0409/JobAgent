@@ -1,0 +1,674 @@
+{
+  "job_details": {
+    "title": "Staff Software Engineer, Media Infrastructure",
+    "company": "Unknown Company",
+    "description": ""
+  },
+  "form_structure": {
+    "elements": [
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "first_name",
+        "name": "",
+        "class": "input input__single-line",
+        "label": "First Name*",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#first_name"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "last_name",
+        "name": "",
+        "class": "input input__single-line",
+        "label": "Last Name*",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#last_name"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "email",
+        "name": "",
+        "class": "input input__single-line",
+        "label": "Email*",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#email"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "phone",
+        "name": "",
+        "class": "input input__single-line",
+        "label": "Phone*",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#phone"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "candidate-location",
+        "name": "",
+        "class": "select__input",
+        "label": "Location (City)*",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#candidate-location"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "",
+        "name": "",
+        "class": "remix-css-1a0ro4n-requiredInput",
+        "label": "",
+        "placeholder": "",
+        "required": true,
+        "visible": true,
+        "selector": ".remix-css-1a0ro4n-requiredInput"
+      },
+      {
+        "type": "input",
+        "input_type": "file",
+        "id": "resume",
+        "name": "",
+        "class": "visually-hidden",
+        "label": "Attach",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#resume"
+      },
+      {
+        "type": "input",
+        "input_type": "file",
+        "id": "cover_letter",
+        "name": "",
+        "class": "visually-hidden",
+        "label": "Attach",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#cover_letter"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "school--0",
+        "name": "",
+        "class": "select__input",
+        "label": "School",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#school--0"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "degree--0",
+        "name": "",
+        "class": "select__input",
+        "label": "Degree",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#degree--0"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "discipline--0",
+        "name": "",
+        "class": "select__input",
+        "label": "Discipline",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#discipline--0"
+      },
+      {
+        "type": "textarea",
+        "input_type": "text",
+        "id": "question_30980527002",
+        "name": "",
+        "class": "input input__multi-line",
+        "label": "This role requires occasional in-office collaboration at our San Francisco headquarters. Are you currently located in the SF/Bay Area and able to commute to our office at least once weekly? \n\nIf you're currently located outside the Bay Area but willing to relocate for this opportunity, please specify this in your response.*",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#question_30980527002"
+      },
+      {
+        "type": "textarea",
+        "input_type": "text",
+        "id": "question_30608968002",
+        "name": "",
+        "class": "input input__multi-line",
+        "label": "Why do you want to work at Discord?*",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#question_30608968002"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "question_30608971002",
+        "name": "",
+        "class": "input input__single-line",
+        "label": "How did you hear about this job?",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#question_30608971002"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "question_30608972002",
+        "name": "",
+        "class": "select__input",
+        "label": "Are you legally authorized to work in the United States for our Company?*",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#question_30608972002"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "",
+        "name": "",
+        "class": "remix-css-1a0ro4n-requiredInput",
+        "label": "",
+        "placeholder": "",
+        "required": true,
+        "visible": true,
+        "selector": ".remix-css-1a0ro4n-requiredInput"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "question_30608973002",
+        "name": "",
+        "class": "select__input",
+        "label": "Are you currently located in the US?*",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#question_30608973002"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "",
+        "name": "",
+        "class": "remix-css-1a0ro4n-requiredInput",
+        "label": "",
+        "placeholder": "",
+        "required": true,
+        "visible": true,
+        "selector": ".remix-css-1a0ro4n-requiredInput"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "question_30608969002",
+        "name": "",
+        "class": "input input__single-line",
+        "label": "LinkedIn Profile",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#question_30608969002"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "question_30608970002",
+        "name": "",
+        "class": "input input__single-line",
+        "label": "Website",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#question_30608970002"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "4024307002",
+        "name": "",
+        "class": "select__input",
+        "label": "Gender Identity",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#4024307002"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "4024308002",
+        "name": "",
+        "class": "select__input",
+        "label": "Race and Ethnicity",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#4024308002"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "4024309002",
+        "name": "",
+        "class": "select__input",
+        "label": "Disability Status",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#4024309002"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "4024310002",
+        "name": "",
+        "class": "select__input",
+        "label": "I consider myself a member of the LGBTQ+ community",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#4024310002"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "4024335002",
+        "name": "",
+        "class": "select__input",
+        "label": "Military Veteran Status",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#4024335002"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "gender",
+        "name": "",
+        "class": "select__input",
+        "label": "Gender*",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#gender"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "",
+        "name": "",
+        "class": "remix-css-1a0ro4n-requiredInput",
+        "label": "",
+        "placeholder": "",
+        "required": true,
+        "visible": true,
+        "selector": ".remix-css-1a0ro4n-requiredInput"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "hispanic_ethnicity",
+        "name": "",
+        "class": "select__input",
+        "label": "Are you Hispanic/Latino?*",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#hispanic_ethnicity"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "",
+        "name": "",
+        "class": "remix-css-1a0ro4n-requiredInput",
+        "label": "",
+        "placeholder": "",
+        "required": true,
+        "visible": true,
+        "selector": ".remix-css-1a0ro4n-requiredInput"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "veteran_status",
+        "name": "",
+        "class": "select__input",
+        "label": "Veteran Status*",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#veteran_status"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "",
+        "name": "",
+        "class": "remix-css-1a0ro4n-requiredInput",
+        "label": "",
+        "placeholder": "",
+        "required": true,
+        "visible": true,
+        "selector": ".remix-css-1a0ro4n-requiredInput"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "disability_status",
+        "name": "",
+        "class": "select__input",
+        "label": "Disability Status*",
+        "placeholder": "",
+        "required": false,
+        "visible": true,
+        "selector": "#disability_status"
+      },
+      {
+        "type": "input",
+        "input_type": "text",
+        "id": "",
+        "name": "",
+        "class": "remix-css-1a0ro4n-requiredInput",
+        "label": "",
+        "placeholder": "",
+        "required": true,
+        "visible": true,
+        "selector": ".remix-css-1a0ro4n-requiredInput"
+      },
+      {
+        "type": "textarea",
+        "input_type": "text",
+        "id": "g-recaptcha-response-100000",
+        "name": "g-recaptcha-response",
+        "class": "g-recaptcha-response",
+        "label": "",
+        "placeholder": "",
+        "required": false,
+        "visible": false,
+        "selector": "#g-recaptcha-response-100000"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "btn btn--rounded",
+        "text": "Apply",
+        "selector": ".btn.btn--rounded"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "btn--tertiary",
+        "text": "Locate me",
+        "selector": ".btn--tertiary"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "btn btn--rounded",
+        "text": "Attach",
+        "selector": ".btn.btn--rounded"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "btn btn--rounded",
+        "text": "Dropbox",
+        "selector": ".btn.btn--rounded"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "btn btn--rounded",
+        "text": "Google Drive",
+        "selector": ".btn.btn--rounded"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "btn btn--rounded",
+        "text": "Enter manually",
+        "selector": ".btn.btn--rounded"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "btn btn--rounded",
+        "text": "Attach",
+        "selector": ".btn.btn--rounded"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "btn btn--rounded",
+        "text": "Dropbox",
+        "selector": ".btn.btn--rounded"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "btn btn--rounded",
+        "text": "Google Drive",
+        "selector": ".btn.btn--rounded"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "btn btn--rounded",
+        "text": "Enter manually",
+        "selector": ".btn.btn--rounded"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "icon-button icon-button--sm",
+        "text": "",
+        "selector": ".icon-button.icon-button--sm"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "icon-button icon-button--sm",
+        "text": "",
+        "selector": ".icon-button.icon-button--sm"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "icon-button icon-button--sm",
+        "text": "",
+        "selector": ".icon-button.icon-button--sm"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "add-another-button",
+        "text": "Add another",
+        "selector": ".add-another-button"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "icon-button icon-button--sm",
+        "text": "",
+        "selector": ".icon-button.icon-button--sm"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "icon-button icon-button--sm",
+        "text": "",
+        "selector": ".icon-button.icon-button--sm"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "icon-button icon-button--sm",
+        "text": "",
+        "selector": ".icon-button.icon-button--sm"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "icon-button icon-button--sm",
+        "text": "",
+        "selector": ".icon-button.icon-button--sm"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "icon-button icon-button--sm",
+        "text": "",
+        "selector": ".icon-button.icon-button--sm"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "icon-button icon-button--sm",
+        "text": "",
+        "selector": ".icon-button.icon-button--sm"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "icon-button icon-button--sm",
+        "text": "",
+        "selector": ".icon-button.icon-button--sm"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "icon-button icon-button--sm",
+        "text": "",
+        "selector": ".icon-button.icon-button--sm"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "icon-button icon-button--sm",
+        "text": "",
+        "selector": ".icon-button.icon-button--sm"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "icon-button icon-button--sm",
+        "text": "",
+        "selector": ".icon-button.icon-button--sm"
+      },
+      {
+        "type": "button",
+        "button_type": "button",
+        "id": "",
+        "name": "",
+        "class": "icon-button icon-button--sm",
+        "text": "",
+        "selector": ".icon-button.icon-button--sm"
+      },
+      {
+        "type": "button",
+        "button_type": "submit",
+        "id": "",
+        "name": "",
+        "class": "btn btn--rounded",
+        "text": "Submit application",
+        "selector": ".btn.btn--rounded"
+      },
+      {
+        "type": "iframe",
+        "id": "apiproxyb6afcc90d5d109a9557217c514c594e121b87ab40.3928399416",
+        "name": "apiproxyb6afcc90d5d109a9557217c514c594e121b87ab40.3928399416",
+        "src": "https://content.googleapis.com/static/proxy.html?usegapi=1&jsh=m%3B%2F_%2Fscs%2Fabc-static%2F_%2Fjs%2Fk%3Dgapi.lb.en.fwXSHnIYz-4.O%2Fd%3D1%2Frs%3DAHpOoo_SvulQ5pP6FvvJyrQeIOJ4MStGTQ%2Fm%3D__features__#parent=https%3A%2F%2Fjob-boards.greenhouse.io&rpctoken=808774663"
+      },
+      {
+        "type": "iframe",
+        "id": "",
+        "name": "a-869tyb838gty",
+        "src": "https://www.recaptcha.net/recaptcha/enterprise/anchor?ar=1&k=6LfmcbcpAAAAAChNTbhUShzUOAMj_wY9LQIvLFX0&co=aHR0cHM6Ly9qb2ItYm9hcmRzLmdyZWVuaG91c2UuaW86NDQz&hl=en&v=hbAq-YhJxOnlU-7cpgBoAJHb&size=invisible&cb=vxcrlvm6jgib"
+      },
+      {
+        "type": "iframe",
+        "id": "",
+        "name": "",
+        "src": ""
+      }
+    ],
+    "element_count": 63,
+    "has_iframe": true
+  },
+  "screenshot_path": "job_posting.png"
+}
