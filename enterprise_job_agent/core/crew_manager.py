@@ -71,7 +71,6 @@ class JobApplicationCrew:
             "allow_delegation": False,
             "verbose": self.verbose,
             "llm": self.llm,
-            "temperature": 0.4,  # Lower temperature for more consistent outputs
         }
         
         # Create form analyzer agent

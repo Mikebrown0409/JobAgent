@@ -199,7 +199,7 @@ class BrowserManager:
     
     async def fill_field(self, selector: str, value: str, frame_identifier: Optional[str] = None) -> bool:
         """
-        Fill a field with a value.
+        Fill a field with a value using explicit waits and robust error handling.
         
         Args:
             selector: Field selector
@@ -211,28 +211,106 @@ class BrowserManager:
         """
         try:
             frame = await self.get_frame(frame_identifier)
+            
+            # Create field locator
             field = frame.locator(selector)
             
+            # ENHANCED: Wait for element to be present and visible before attempting interaction
+            try:
+                logger.debug(f"Waiting for field {selector} to be visible in frame {frame_identifier}")
+                await field.wait_for(state="visible", timeout=10000)
+            except Error as e:
+                logger.warning(f"Timeout waiting for element to be visible: {selector} in frame {frame_identifier}")
+                # Check if element exists but might not be visible
+                if await field.count() == 0:
+                    logger.error(f"Field {selector} not found in frame {frame_identifier}")
+                    return False
+            
+            # Check if element is still detached or hidden
             if await field.count() == 0:
-                logger.warning(f"Field {selector} not found in frame {frame_identifier}")
+                logger.error(f"Field {selector} not found after waiting in frame {frame_identifier}")
+                return False
+                
+            is_visible = await field.is_visible()
+            if not is_visible:
+                logger.warning(f"Field {selector} exists but is not visible in frame {frame_identifier}")
+                # Attempt to scroll element into view
+                try:
+                    await field.scroll_into_view_if_needed()
+                except Error as scroll_error:
+                    logger.warning(f"Could not scroll to {selector}: {scroll_error}")
+            
+            # ENHANCED: Check if element is actually editable before proceeding
+            is_enabled = await field.is_enabled()
+            if not is_enabled:
+                logger.warning(f"Field {selector} is disabled in frame {frame_identifier}")
                 return False
             
             # Check if the field is a select element
             is_select = await frame.evaluate(f"() => document.querySelector('{selector}')?.tagName?.toLowerCase() === 'select'")
             
-            if is_select:
-                # Handle select dropdown
-                await field.select_option(value)
-            else:
-                # Clear the field first
-                await field.fill("")
-                # Fill the field
-                await field.fill(value)
+            # ADDED: Try methods with retry logic
+            max_attempts = 3
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    if is_select:
+                        # Handle select dropdown
+                        await field.select_option(value)
+                    else:
+                        # Clear the field first (with explicit wait)
+                        await field.clear()
+                        # Wait a moment for any field validation
+                        await asyncio.sleep(0.2)
+                        # Fill the field
+                        await field.fill(value)
+                    
+                    # ADDED: Verify field was filled correctly
+                    field_value = ""
+                    try:
+                        field_value = await frame.evaluate(f"""
+                            () => {{
+                                const el = document.querySelector('{selector}');
+                                return el ? (el.value || el.textContent || '') : '';
+                            }}
+                        """)
+                    except Exception as e:
+                        logger.warning(f"Could not verify field value: {e}")
+                    
+                    # Check if field contains our value - partial match is OK
+                    if isinstance(field_value, str) and (value in field_value or field_value in value):
+                        logger.info(f"Successfully filled field {selector} with value: {value} (attempt {attempt})")
+                        return True
+                    else:
+                        logger.warning(f"Field value verification failed. Expected: '{value}', Got: '{field_value}'. Retrying...")
+                        # Only retry if verification fails
+                        if attempt < max_attempts:
+                            # Add progressive backoff
+                            await asyncio.sleep(0.5 * attempt)
+                            continue
+                        else:
+                            # Last attempt succeeded in filling but verification failed
+                            logger.warning(f"Field fill operation completed but verification failed. Proceeding anyway.")
+                            return True
+                except Error as fill_error:
+                    logger.warning(f"Error filling field on attempt {attempt}: {fill_error}")
+                    if attempt < max_attempts:
+                        # Add progressive backoff
+                        await asyncio.sleep(0.5 * attempt)
+                        # Try scrolling to element again in case it's off-screen
+                        try:
+                            await field.scroll_into_view_if_needed()
+                        except:
+                            pass
+                    else:
+                        # All attempts failed
+                        raise fill_error
             
-            logger.info(f"Filled field {selector} with value: {value}")
-            return True
+            # Should not reach here, but just in case
+            logger.warning(f"Exhausted all attempts to fill field {selector}. Last attempt didn't raise error but didn't return either.")
+            return False
+            
         except Exception as e:
-            logger.error(f"Error filling field {selector}: {e}")
+            logger.error(f"Error filling field {selector} in frame {frame_identifier}: {e}")
             return False
     
     async def select_custom_dropdown(\

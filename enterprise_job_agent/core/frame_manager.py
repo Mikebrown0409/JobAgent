@@ -42,9 +42,25 @@ class AdvancedFrameManager:
             }
         }
         
+        # Wait for page to stabilize and iframes to load
+        try:
+            await self.page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception as e:
+            logger.warning(f"Wait for networkidle timed out, continuing with frame mapping: {e}")
+        
+        # Before mapping, check for common application patterns
+        try:
+            # Check for Greenhouse Application iframe - common pattern
+            greenhouse_iframe = self.page.frame_locator('iframe[id="grnhse_iframe"]').first
+            if await greenhouse_iframe.count() > 0:
+                logger.info("Detected Greenhouse application iframe")
+        except Exception as e:
+            logger.debug(f"Error checking for Greenhouse iframe: {e}")
+        
         # Map all child frames recursively
         await self._map_child_frames(self.page.main_frame, "main", 1)
         
+        # Log mapped frames
         logger.info(f"Mapped {len(self.frames)} frames")
         for identifier, metadata in self.frame_metadata.items():
             logger.debug(f"Frame: {identifier} - URL: {metadata.get('url')}, Title: {metadata.get('title')}")
@@ -60,7 +76,14 @@ class AdvancedFrameManager:
             parent_id: The identifier of the parent frame
             depth: The current depth level
         """
+        # Enhanced: Wait briefly to ensure all frames are loaded
+        try:
+            await asyncio.sleep(0.2 * depth)  # Progressive sleep based on depth
+        except Exception:
+            pass
+        
         child_frames = parent_frame.child_frames
+        logger.debug(f"Found {len(child_frames)} child frames in parent '{parent_id}'")
         
         for i, frame in enumerate(child_frames):
             try:
@@ -71,12 +94,32 @@ class AdvancedFrameManager:
                 except Exception:
                     logger.debug(f"Could not get URL for frame at index {i}, using default")
                 
+                # Enhanced: More detailed frame inspection
+                frame_attributes = {}
+                try:
+                    # Try to get iframe element attributes from parent
+                    iframe_selector = f"iframe:nth-child({i+1})"
+                    iframe_element = parent_frame.locator(iframe_selector)
+                    
+                    if await iframe_element.count() > 0:
+                        for attr in ["id", "name", "src", "title", "class"]:
+                            attr_value = await iframe_element.get_attribute(attr)
+                            if attr_value:
+                                frame_attributes[attr] = attr_value
+                except Exception as e:
+                    logger.debug(f"Error getting iframe attributes: {e}")
+                
                 # Get frame name with fallback
-                frame_name = frame.name or f"frame_{len(self.frames)}"
+                frame_name = frame.name or frame_attributes.get("name") or f"frame_{len(self.frames)}"
                 
                 # Create a unique identifier that's stable across page reloads
+                # Priority: explicit name/id > URL-based identifier > parent-based fallback
                 if frame.name and frame.name != "":
                     identifier = frame.name
+                elif frame_attributes.get("id"):
+                    identifier = frame_attributes.get("id")
+                elif frame_attributes.get("name"):
+                    identifier = frame_attributes.get("name")
                 elif "iframe" in frame_url:
                     # Extract a stable part of the URL if possible
                     url_parts = frame_url.split("/")
@@ -97,20 +140,24 @@ class AdvancedFrameManager:
                 # Add to frames dict
                 self.frames[identifier] = frame
                 
-                # Add metadata
+                # Add metadata, including discovered attributes
                 self.frame_metadata[identifier] = {
                     "url": frame_url,
                     "name": frame_name,
                     "depth": depth,
                     "parent": parent_id,
-                    "index": i
+                    "index": i,
+                    "attributes": frame_attributes
                 }
+                
+                # Enhanced: Log more details about identified frame
+                logger.debug(f"Mapped frame '{identifier}' at depth {depth} with attributes: {frame_attributes}")
                 
                 # Recursively map child frames
                 await self._map_child_frames(frame, identifier, depth + 1)
                 
             except Exception as e:
-                logger.warning(f"Error mapping child frame: {e}")
+                logger.warning(f"Error mapping child frame at index {i} in parent '{parent_id}': {e}")
     
     async def find_frame_for_selector(self, selector: str) -> Optional[Tuple[str, Frame]]:
         """
@@ -137,20 +184,76 @@ class AdvancedFrameManager:
             key=lambda x: self.frame_metadata.get(x[0], {}).get("depth", 0)
         )
         
+        # Enhanced: First check frames that match known patterns
+        for pattern, frame_identifiers in self._get_prioritized_frames().items():
+            if pattern in selector.lower():
+                logger.debug(f"Selector '{selector}' matches pattern '{pattern}', checking prioritized frames first")
+                # Check prioritized frames first
+                for identifier in frame_identifiers:
+                    if identifier in self.frames:
+                        frame = self.frames[identifier]
+                        try:
+                            # Check if the selector exists in this frame
+                            count = await frame.locator(selector).count()
+                            if count > 0:
+                                logger.debug(f"Found selector '{selector}' in prioritized frame '{identifier}'")
+                                # Cache the result for future lookups
+                                self.cached_selectors[selector] = identifier
+                                return (identifier, frame)
+                        except Exception as e:
+                            logger.debug(f"Error checking selector in prioritized frame '{identifier}': {e}")
+        
+        # Check all frames
         for identifier, frame in frame_items:
             try:
-                # Check if the selector exists in this frame
-                count = await frame.locator(selector).count()
-                if count > 0:
-                    logger.debug(f"Found selector '{selector}' in frame '{identifier}'")
-                    # Cache the result for future lookups
-                    self.cached_selectors[selector] = identifier
-                    return (identifier, frame)
+                # Add retry with better error handling
+                for attempt in range(2):  # 2 attempts
+                    try:
+                        # Check if the selector exists in this frame
+                        count = await frame.locator(selector).count()
+                        if count > 0:
+                            logger.debug(f"Found selector '{selector}' in frame '{identifier}'")
+                            # Cache the result for future lookups
+                            self.cached_selectors[selector] = identifier
+                            return (identifier, frame)
+                    except Error as e:
+                        if "detached" in str(e).lower() and attempt == 0:
+                            # Frame may be temporarily detached, retry once
+                            logger.debug(f"Frame '{identifier}' might be detached, retrying")
+                            await asyncio.sleep(0.5)
+                        else:
+                            raise
             except Exception as e:
                 logger.warning(f"Error checking selector '{selector}' in frame '{identifier}': {e}")
         
         logger.warning(f"Selector '{selector}' not found in any frame")
         return None
+    
+    def _get_prioritized_frames(self) -> Dict[str, List[str]]:
+        """
+        Get prioritized frames based on common patterns.
+        
+        Returns:
+            Dictionary mapping selector patterns to frame identifiers
+        """
+        # Map common element patterns to likely frame identifiers
+        prioritized = {
+            "first_name": ["application", "grnhse_iframe", "application_form"],
+            "last_name": ["application", "grnhse_iframe", "application_form"],
+            "email": ["application", "grnhse_iframe", "application_form"],
+            "phone": ["application", "grnhse_iframe", "application_form"],
+            "location": ["application", "grnhse_iframe", "application_form"],
+            "resume": ["application", "grnhse_iframe", "application_form"],
+            "education": ["application", "grnhse_iframe", "education_form"],
+            "experience": ["application", "grnhse_iframe", "experience_form"]
+        }
+        
+        # Ensure all identifiers exist, filtering out non-existent ones
+        result = {}
+        for pattern, identifiers in prioritized.items():
+            result[pattern] = [i for i in identifiers if i in self.frames]
+        
+        return result
     
     async def reset_cached_selectors(self) -> None:
         """Clear the selector cache after navigation or major DOM changes."""
