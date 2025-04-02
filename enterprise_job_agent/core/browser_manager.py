@@ -263,6 +263,202 @@ class BrowserManager:
             logger.error(f"Error filling field {selector}: {e}")
             return False
     
+    async def select_custom_dropdown(\
+        self, \
+        trigger_selector: str, \
+        options_selector: str, \
+        value_to_select: str, \
+        frame_identifier: Optional[str] = None\
+    ) -> bool:
+        """
+        Select an option from a custom dropdown (not a standard <select>).
+
+        Args:
+            trigger_selector: Selector for the element that opens the dropdown.
+            options_selector: Selector for the individual option elements within the dropdown.
+            value_to_select: The exact text content of the option to select.
+            frame_identifier: Optional frame identifier.
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        try:
+            frame = await self.get_frame(frame_identifier)
+            trigger_element = frame.locator(trigger_selector)
+
+            if await trigger_element.count() == 0:
+                logger.warning(f"Dropdown trigger {trigger_selector} not found in frame {frame_identifier}")
+                return False
+
+            logger.debug(f"Clicking dropdown trigger: {trigger_selector}")
+            await trigger_element.click()
+
+            # Wait briefly for options to potentially appear/animate
+            await frame.wait_for_timeout(500) 
+
+            # Wait for at least one option to be visible
+            try:
+                await frame.locator(options_selector).first.wait_for(state="visible", timeout=10000)
+            except Error as e:
+                logger.warning(f"Dropdown options ({options_selector}) did not become visible after clicking trigger {trigger_selector}: {e}")
+                # Attempt to dismiss and return failure
+                try:
+                    await frame.locator("body").click(timeout=1000) 
+                except Error: pass # Ignore error if body click fails
+                return False
+
+            options = frame.locator(options_selector)
+            option_count = await options.count()
+            logger.debug(f"Found {option_count} options matching: {options_selector}")
+
+            selected = False
+            for i in range(option_count):
+                option = options.nth(i)
+                try:
+                    option_text = (await option.text_content() or "").strip()
+                    if option_text == value_to_select:
+                        logger.info(f"Found matching option '{option_text}'. Clicking.")
+                        await option.click()
+                        selected = True
+                        break
+                except Error as e:
+                    logger.warning(f"Error processing option {i} for selector {options_selector}: {e}")
+                    continue # Try next option
+
+            if not selected:
+                logger.warning(f"Could not find option with text '{value_to_select}' in dropdown triggered by {trigger_selector}")
+
+            # Attempt to dismiss the dropdown by clicking the body, regardless of selection success
+            try:
+                logger.debug("Attempting to dismiss dropdown by clicking body")
+                await frame.locator("body").click(timeout=1000) # Short timeout for dismissal
+            except Error as e:
+                logger.warning(f"Could not click body to dismiss dropdown: {e}")
+                # Don't necessarily fail the whole operation if dismissal click fails
+
+            return selected
+
+        except Error as e:
+            logger.error(f"Error interacting with custom dropdown {trigger_selector}: {e}")
+            # Attempt to dismiss if an error occurred mid-operation
+            try:
+                frame = await self.get_frame(frame_identifier)
+                await frame.locator("body").click(timeout=1000)
+            except Error: pass 
+            return False
+    
+    async def fill_date_field(self, selector: str, date_value: str, frame_identifier: Optional[str] = None) -> bool:
+        """
+        Fill a date input field with a date string.
+        
+        Assumes the date field accepts direct text input in a common format (e.g., YYYY-MM-DD, MM/DD/YYYY).
+        
+        Args:
+            selector: Date field selector.
+            date_value: The date string to fill.
+            frame_identifier: Optional frame identifier.
+            
+        Returns:
+            True if successful, False otherwise.
+        """
+        logger.info(f"Attempting to fill date field {selector} with value '{date_value}'")
+        # Directly use fill_field, assuming the input accepts text.
+        # More complex calendar interaction can be added if needed.
+        return await self.fill_field(selector, date_value, frame_identifier)
+    
+    async def upload_file(self, selector: str, file_path: str, frame_identifier: Optional[str] = None) -> bool:
+        """
+        Upload a file to a file input element.
+
+        Args:
+            selector: Selector for the <input type="file"> element.
+            file_path: The absolute or relative path to the file to upload.
+            frame_identifier: Optional frame identifier.
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        try:
+            frame = await self.get_frame(frame_identifier)
+            file_input = frame.locator(selector)
+
+            if await file_input.count() == 0:
+                logger.warning(f"File input {selector} not found in frame {frame_identifier}")
+                return False
+
+            # Verify the element is an input type=file
+            is_file_input = await file_input.evaluate("el => el.tagName === 'INPUT' && el.type === 'file'")
+            if not is_file_input:
+                logger.warning(f"Element {selector} is not an <input type=\"file\">")
+                return False
+
+            logger.info(f"Uploading file '{file_path}' to input {selector}")
+            await file_input.set_input_files(file_path)
+            logger.info(f"Successfully set input file for {selector}")
+            return True
+            
+        except FileNotFoundError:
+            logger.error(f"File not found for upload: {file_path}")
+            return False
+        except Error as e:
+            logger.error(f"Error uploading file to {selector}: {e}")
+            return False
+    
+    async def set_checkbox_radio(self, selector: str, should_be_checked: bool = True, frame_identifier: Optional[str] = None) -> bool:
+        """
+        Set the state of a checkbox or radio button.
+
+        Args:
+            selector: Selector for the <input type=\"checkbox\"> or <input type=\"radio\">.
+            should_be_checked: Whether the element should end up checked (True) or unchecked (False).
+                               For radio buttons, this is typically always True.
+            frame_identifier: Optional frame identifier.
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        try:
+            frame = await self.get_frame(frame_identifier)
+            element = frame.locator(selector)
+
+            if await element.count() == 0:
+                logger.warning(f"Checkbox/radio {selector} not found in frame {frame_identifier}")
+                return False
+
+            element_type = await element.evaluate("el => el.type")
+            if element_type not in ["checkbox", "radio"]:
+                 logger.warning(f"Element {selector} is not a checkbox or radio button (type: {element_type})")
+                 # Still might be a clickable label/span, attempt click if checking
+                 if should_be_checked:
+                     logger.debug(f"Attempting direct click on {selector} as it might be a label/custom element")
+                     await element.click()
+                     # Cannot easily verify success here without knowing the underlying input state
+                     return True 
+                 else:
+                     return False # Cannot reliably uncheck a non-input element this way
+            
+            current_state = await element.is_checked()
+            logger.debug(f"Checkbox/radio {selector} current state: {current_state}, desired state: {should_be_checked}")
+
+            if current_state != should_be_checked:
+                logger.info(f"Clicking {selector} to change state to {should_be_checked}")
+                await element.click() # click() often more robust than check()/uncheck()
+                
+                # Verify state after click
+                await asyncio.sleep(0.1) # Brief pause for state update
+                new_state = await element.is_checked()
+                if new_state != should_be_checked:
+                    logger.warning(f"State change failed for {selector}. Expected {should_be_checked}, got {new_state}")
+                    return False
+            else:
+                logger.info(f"Checkbox/radio {selector} is already in the desired state ({should_be_checked})")
+
+            return True
+
+        except Error as e:
+            logger.error(f"Error setting checkbox/radio {selector}: {e}")
+            return False
+    
     async def click_element(self, selector: str, frame_identifier: Optional[str] = None) -> bool:
         """
         Click an element.
