@@ -1,6 +1,0 @@
-{
-  "success": false,
-  "error": "'NoneType' object has no attribute 'supports_stop_words'",
-  "job_id": "566ecd48",
-  "test_mode": true
-}

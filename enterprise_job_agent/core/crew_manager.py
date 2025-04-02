@@ -11,8 +11,27 @@ from crewai import Crew, Agent, Task, Process
 from enterprise_job_agent.core.field_identification_system import FieldIdentificationSystem
 from enterprise_job_agent.agents.profile_adapter_agent import ProfileAdapterAgent
 from crewai.tasks.task_output import TaskOutput
+from enterprise_job_agent.core.browser_manager import BrowserManager
 
 logger = logging.getLogger(__name__)
+
+# Define path for failure log
+FAILURE_LOG_PATH = "execution_failures.log.json"
+
+def log_execution_failure(job_url: str, failed_op: Dict, error_context: Dict):
+    """Logs failed execution step details to a JSON log file."""
+    log_entry = {
+        "timestamp": time.time(),
+        "job_url": job_url,
+        "failed_operation": failed_op,
+        "error_context": error_context
+    }
+    try:
+        with open(FAILURE_LOG_PATH, "a") as f:
+            json.dump(log_entry, f)
+            f.write("\n")
+    except Exception as e:
+        logger.error(f"Failed to write to failure log {FAILURE_LOG_PATH}: {e}")
 
 class JobApplicationCrew:
     """
@@ -22,6 +41,7 @@ class JobApplicationCrew:
     def __init__(
         self, 
         llm: Any,
+        browser_manager: Any,
         verbose: bool = False
     ):
         """
@@ -29,9 +49,11 @@ class JobApplicationCrew:
         
         Args:
             llm: Language model to use for agents
+            browser_manager: Instance of BrowserManager for executing actions
             verbose: Whether to enable verbose logging
         """
         self.llm = llm
+        self.browser_manager = browser_manager
         self.verbose = verbose
         self.field_system = FieldIdentificationSystem()
         self.profile_adapter = ProfileAdapterAgent(llm=llm, verbose=verbose)
@@ -219,27 +241,84 @@ class JobApplicationCrew:
             agent=self.agents["field_mapper"]
         )
     
-    def create_application_execution_task(self, form_analysis, profile_mapping, test_mode):
-        """Create a task for application execution."""
+    def create_execution_plan_task(self, form_analysis, profile_mapping, test_mode):
+        """Create a task for generating the application execution plan."""
+        # Define the expected JSON output structure for the plan
+        # (This should match the structure requested in ApplicationExecutorAgent.create_execution_prompt)
+        execution_plan_schema = { 
+            "execution_plan": {
+                "stages": [
+                    {
+                        "name": "stage_name",
+                        "description": "What this stage accomplishes",
+                        "operations": [
+                            {
+                                "type": "fill | click | select_custom_dropdown | upload_file | set_checkbox_radio",
+                                "field_id": "Optional logical field ID",
+                                "selector": "CSS selector for the target element",
+                                "value": "Value to enter/select/upload path", # Optional depending on type
+                                "trigger_selector": "Selector for dropdown trigger", # For custom_dropdown
+                                "options_selector": "Selector for dropdown options", # For custom_dropdown
+                                "should_be_checked": True, # For checkbox/radio
+                                "frame_identifier": "Optional frame name/ID/URL part",
+                                "verification": "Description of how to verify success", # Optional
+                                "fallback": "Description of fallback approach" # Optional
+                            }
+                        ]
+                    }
+                ],
+                "submission": {
+                    "should_submit": False, # Based on test_mode
+                    "submit_selector": "Selector for submit button",
+                    "confirmation_handling": "Description of confirmation handling" # Optional
+                }
+            },
+            "error_handling": {
+                "common_issues": [
+                    {
+                        "issue": "Potential issue description",
+                        "detection": "How to detect this issue",
+                        "resolution": "How to resolve this issue"
+                    }
+                ]
+            }
+        }
+
         return Task(
             description=f"""
-            Prepare the final submission data for the job application.
+            Generate a detailed execution plan for filling and submitting the job application form.
             
-            Based on the form analysis and field mappings, create the final submission data:
-            1. Ensure all required fields have values
-            2. Format all data according to field requirements
-            3. Validate the submission data for completeness and correctness
-            4. Identify any fields that require special attention before submission
+            FORM ANALYSIS:
+            ```json
+            {json.dumps(form_analysis, indent=2)}
+            ```
             
-            {'This is a TEST MODE run - no actual submission will be made.' if test_mode else 'This will be used for ACTUAL SUBMISSION - ensure all data is accurate.'}
+            FIELD MAPPINGS:
+            ```json
+            {json.dumps(profile_mapping, indent=2)}
+            ```
+            
+            TEST MODE: {'Yes - Do not actually submit the application' if test_mode else 'No - Proceed with submission'}
+            
+            INSTRUCTIONS:
+            - Create a step-by-step plan using stages and operations.
+            - Prioritize required fields.
+            - Specify the correct 'type' for each operation based on the field.
+            - Include necessary selectors and values.
+            - For custom dropdowns, provide trigger_selector and options_selector.
+            - For file uploads, provide the file path in the 'value' field.
+            - For checkboxes/radio, set 'should_be_checked'.
+            - If an element is in an iframe, specify the 'frame_identifier'.
+            - Set 'should_submit' in the submission section based on the TEST MODE flag.
+            - Ensure the final output is a single JSON object matching the provided schema EXACTLY.
             """,
-            expected_output="""A JSON structure containing:
-            1. Complete submission data for all form fields
-            2. Validation results and confidence level
-            3. Any warnings or issues to address
-            4. Final submission readiness assessment
+            expected_output=f"""A single JSON object representing the execution plan, strictly adhering to the following schema:
+            ```json
+            {json.dumps(execution_plan_schema, indent=2)}
+            ```
             """,
-            agent=self.agents["submission_agent"]
+            # Assign to the correct agent
+            agent=self.agents["application_executor"] 
         )
     
     async def execute_job_application_process(
@@ -247,7 +326,8 @@ class JobApplicationCrew:
         form_data: Dict[str, Any],
         user_profile: Dict[str, Any],
         job_description: Dict[str, Any],
-        test_mode: bool = False
+        test_mode: bool = False,
+        job_url: str = ""
     ) -> Dict[str, Any]:
         """
         Execute the full job application process using the agent crew.
@@ -257,6 +337,7 @@ class JobApplicationCrew:
             user_profile: User profile data
             job_description: Optional job description
             test_mode: Whether to run in test mode
+            job_url: URL of the job posting
             
         Returns:
             Results of the job application process
@@ -267,17 +348,36 @@ class JobApplicationCrew:
             # Define tasks for each agent
             form_analysis_task = self.create_form_analysis_task(form_data)
             field_mapping_task = self.create_profile_mapping_task(form_data, user_profile, job_description)
-            submission_preparation_task = self.create_application_execution_task(form_data, form_data, test_mode)
+            execution_plan_task = self.create_execution_plan_task(form_data, form_data, test_mode)
             
             # Create the crew with the agents and tasks
             self.crew = self.create_crew()
-            self.crew.tasks = [form_analysis_task, field_mapping_task, submission_preparation_task]
+            self.crew.tasks = [form_analysis_task, field_mapping_task, execution_plan_task]
             
             # Run the crew asynchronously
             results = await self._run_crew_async(self.crew)
             
-            # Process and return the results
-            return self._process_results(results, test_mode)
+            # Process results
+            processed_results = self._process_results(results, test_mode)
+            logger.debug(f"Processed crew results: {processed_results}")
+
+            # Execute the plan
+            execution_plan = processed_results.get("execution_plan")
+            execution_successful = False
+            if execution_plan:
+                try:
+                    # Pass the plan, form_data, and job_url to the execution method
+                    execution_successful = await self._execute_plan(execution_plan, form_data, job_url)
+                    processed_results["execution_status"] = "Success" if execution_successful else "Failed"
+                except Exception as e:
+                    logger.error(f"Exception occurred during plan execution: {e}")
+                    processed_results["execution_status"] = "Failed due to exception"
+                    # Optionally trigger error recovery here as well
+            else:
+                 logger.error("No execution plan found in agent results.")
+                 processed_results["execution_status"] = "Failed - No Plan"
+
+            return processed_results
             
         except Exception as e:
             logger.error(f"Error in job application process: {str(e)}")
@@ -396,7 +496,7 @@ class JobApplicationCrew:
                     elif task_agent == "Form Field Mapping Specialist":
                         processed_results["field_mappings"] = parsed_content
                     elif task_agent == "Application Execution Specialist":
-                        processed_results["submission_data"] = parsed_content
+                        processed_results["execution_plan"] = parsed_content
                     elif task_agent == "Error Recovery Specialist":
                         processed_results["recovery_data"] = parsed_content
                     
@@ -445,7 +545,7 @@ class JobApplicationCrew:
                 {
                     "error_message": str(error),
                     "error_type": type(error).__name__,
-                    "task": "application_execution"
+                    "task": "execution_plan"
                 },
                 [],
                 form_data
@@ -491,4 +591,135 @@ class JobApplicationCrew:
             return {"diagnosis": "No recovery result produced"}
         except Exception as recovery_error:
             logger.error(f"Error in error recovery process: {str(recovery_error)}")
-            return {"diagnosis": "Recovery failed", "error": str(recovery_error)} 
+            return {"diagnosis": "Recovery failed", "error": str(recovery_error)}
+
+    async def _execute_plan(self, execution_plan: Dict[str, Any], form_data: Dict[str, Any], job_url: str) -> bool:
+        """Execute the browser actions defined in the execution plan."""
+        logger.info("Starting execution of the generated plan.")
+        plan_successful = True
+
+        if not execution_plan or 'execution_plan' not in execution_plan:
+            logger.error("Execution plan is missing or invalid.")
+            return False
+
+        plan_data = execution_plan['execution_plan']
+        stages = plan_data.get('stages', [])
+
+        for stage in stages:
+            stage_name = stage.get('name', 'Unnamed Stage')
+            logger.info(f"--- Executing Stage: {stage_name} ---")
+            operations = stage.get('operations', [])
+            
+            for op in operations:
+                op_type = op.get('type')
+                selector = op.get('selector')
+                value = op.get('value') # Might be None for clicks
+                frame_id = op.get('frame_identifier') # Defaults to None if missing
+                
+                logger.debug(f"Executing operation: {op_type} on selector '{selector}' with value '{value}' in frame '{frame_id}'")
+                
+                success = False
+                try:
+                    if op_type == 'fill':
+                        if selector and value is not None:
+                            success = await self.browser_manager.fill_field(selector, value, frame_identifier=frame_id)
+                        else:
+                             logger.warning(f"Skipping fill operation due to missing selector or value: {op}")
+                    elif op_type == 'click':
+                        if selector:
+                            success = await self.browser_manager.click_element(selector, frame_identifier=frame_id)
+                        else:
+                            logger.warning(f"Skipping click operation due to missing selector: {op}")
+                    elif op_type == 'select_custom_dropdown':
+                        trigger_selector = op.get('trigger_selector')
+                        options_selector = op.get('options_selector')
+                        if trigger_selector and options_selector and value is not None:
+                            success = await self.browser_manager.select_custom_dropdown(
+                                trigger_selector, options_selector, value, frame_identifier=frame_id
+                            )
+                        else:
+                             logger.warning(f"Skipping select_custom_dropdown operation due to missing selectors or value: {op}")
+                    elif op_type == 'upload_file':
+                        if selector and value:
+                             # Ensure value (file path) exists - BrowserManager also checks but good to check early
+                             if os.path.exists(value):
+                                 success = await self.browser_manager.upload_file(selector, value, frame_identifier=frame_id)
+                             else:
+                                 logger.error(f"File path specified in plan does not exist: {value}")
+                                 success = False
+                        else:
+                            logger.warning(f"Skipping upload_file operation due to missing selector or file path: {op}")
+                    elif op_type == 'set_checkbox_radio':
+                        should_be_checked = op.get('should_be_checked', True)
+                        if selector:
+                            success = await self.browser_manager.set_checkbox_radio(selector, should_be_checked, frame_identifier=frame_id)
+                        else:
+                            logger.warning(f"Skipping set_checkbox_radio operation due to missing selector: {op}")
+                    else:
+                        logger.warning(f"Unsupported operation type '{op_type}' in execution plan: {op}")
+
+                    if not success:
+                        logger.error(f"Execution failed at stage '{stage_name}' on operation: {op}")
+                        error_context = {
+                            "error_message": f"Operation failed: {op_type} on {selector}",
+                            "error_type": "OperationFailed",
+                            "task": "plan_execution",
+                            "failed_operation": op
+                        }
+                        # Log the failure
+                        log_execution_failure(job_url, op, error_context)
+                        # Call error handler
+                        await self._handle_error(error_context, form_data, {}, {})
+                        # Abort plan execution
+                        return False 
+                    else:
+                        logger.debug(f"Operation successful: {op_type} on {selector}")
+                        # Optional delay between operations
+                        await asyncio.sleep(0.2)
+
+                except Exception as e:
+                    logger.error(f"Exception during operation execution: {op}. Error: {e}")
+                    plan_successful = False
+                    # --- Enhanced Error Handling --- 
+                    error_context = {
+                        "error_message": str(e),
+                        "error_type": type(e).__name__,
+                        "task": "plan_execution",
+                        "failed_operation": op
+                    }
+                    # Log the failure
+                    log_execution_failure(job_url, op, error_context)
+                    # Call error handler
+                    await self._handle_error(error_context, form_data, {}, {})
+                    # Abort plan execution
+                    # --- End Enhanced Error Handling --- 
+                    return False # Abort on unexpected exception
+
+        logger.info("--- Completed all planned operations --- ")
+
+        # Handle Submission
+        submission_details = plan_data.get('submission', {})
+        should_submit = submission_details.get('should_submit', False)
+        submit_selector = submission_details.get('submit_selector')
+
+        if should_submit:
+            if submit_selector:
+                logger.info(f"Attempting final submission by clicking: {submit_selector}")
+                try:
+                    submit_success = await self.browser_manager.click_element(submit_selector)
+                    if not submit_success:
+                        logger.error("Failed to click the submit button.")
+                        plan_successful = False
+                    else:
+                        logger.info("Submit button clicked successfully.")
+                        # Add potential wait/check for confirmation if needed based on `confirmation_handling`
+                except Exception as e:
+                     logger.error(f"Exception during submission click: {e}")
+                     plan_successful = False
+            else:
+                logger.warning("Plan specified submission, but no submit_selector was provided.")
+                plan_successful = False # Cannot submit without selector
+        else:
+            logger.info("Skipping final submission as per execution plan (test_mode likely enabled).")
+
+        return plan_successful 

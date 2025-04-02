@@ -5,24 +5,28 @@ import asyncio
 from typing import Dict, Any, Optional, List, Tuple
 from playwright.async_api import async_playwright, Page, Browser, BrowserContext, Frame, Locator, Error
 
+# Import AdvancedFrameManager
+from enterprise_job_agent.core.frame_manager import AdvancedFrameManager
+
 logger = logging.getLogger(__name__)
 
 class BrowserManager:
     """Manages browser interactions for job applications."""
     
-    def __init__(self, headless: bool = True):
+    def __init__(self, headless: bool = True, frame_manager: Optional[AdvancedFrameManager] = None):
         """
         Initialize the browser manager.
         
         Args:
             headless: Whether to run in headless mode
+            frame_manager: An instance of AdvancedFrameManager
         """
         self.headless = headless
         self.playwright = None
         self.browser = None
         self.context = None
         self.page = None
-        self.frame_cache = {}
+        self.frame_manager = frame_manager
         
     async def start(self) -> bool:
         """
@@ -40,6 +44,15 @@ class BrowserManager:
                 user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36'
             )
             self.page = await self.context.new_page()
+
+            # Initialize Frame Manager if not provided
+            if not self.frame_manager:
+                logger.warning("AdvancedFrameManager not provided, creating instance.")
+                self.frame_manager = AdvancedFrameManager(self.page)
+            elif self.frame_manager.page != self.page:
+                logger.warning("Provided AdvancedFrameManager has different page, re-initializing.")
+                self.frame_manager = AdvancedFrameManager(self.page)
+
             logger.info("Browser started successfully")
             return True
         except Exception as e:
@@ -60,8 +73,10 @@ class BrowserManager:
             logger.info(f"Navigating to {url}")
             await self.page.goto(url, wait_until="networkidle", timeout=60000)
             
-            # Clear frame cache after navigation
-            self.frame_cache = {}
+            # Clear frame cache after navigation - Now handled by FrameManager
+            if self.frame_manager:
+                await self.frame_manager.map_all_frames() # Re-map frames after navigation
+                await self.frame_manager.reset_cached_selectors() # Reset selector cache
             
             logger.info(f"Successfully navigated to {url}")
             return True
@@ -99,80 +114,37 @@ class BrowserManager:
     
     async def get_frame(self, frame_identifier: Optional[str] = None) -> Frame:
         """
-        Get a frame by identifier.
+        Get a frame using the AdvancedFrameManager.
         
         Args:
-            frame_identifier: Frame identifier (URL, name, or ID)
+            frame_identifier: Frame identifier (e.g., 'main', name, ID, or derived identifier)
             
         Returns:
-            Frame object or main page if no identifier provided
+            Frame object or main page frame if identifier is None, 'main', or not found.
         """
         if not frame_identifier or frame_identifier == "main":
+            logger.debug("Requested main frame.")
             return self.page.main_frame
         
-        # Check cache first
-        if frame_identifier in self.frame_cache:
-            frame = self.frame_cache[frame_identifier]
+        if not self.frame_manager:
+            logger.error("AdvancedFrameManager is not initialized. Cannot get specific frame.")
+            return self.page.main_frame # Fallback
+            
+        # Use AdvancedFrameManager's mapped frames
+        target_frame = self.frame_manager.frames.get(frame_identifier)
+        
+        if target_frame:
+            # Optional: Add a quick check to see if the frame is still attached/valid
             try:
-                # Verify the frame is still valid by checking its URL
-                await frame.url()
-                return frame
-            except Exception:
-                # Frame is no longer valid, remove from cache
-                del self.frame_cache[frame_identifier]
-        
-        # Look for frame by URL, name, or ID
-        try:
-            frames = self.page.frames
-            for frame in frames:
-                frame_url = frame.url
-                frame_name = await frame.name() if hasattr(frame, "name") else ""
-                
-                # Check if the frame matches any of the identifiers
-                if (
-                    frame_identifier in frame_url or 
-                    frame_identifier == frame_name or
-                    await self._frame_has_id(frame, frame_identifier)
-                ):
-                    # Cache the frame for future use
-                    self.frame_cache[frame_identifier] = frame
-                    return frame
-            
-            # If no match found, try to find iframe by selector and get its frame
-            iframe_locator = self.page.locator(f"iframe[src*='{frame_identifier}'], iframe[id='{frame_identifier}'], iframe[name='{frame_identifier}']")
-            if await iframe_locator.count() > 0:
-                iframe = iframe_locator.first
-                frame_handle = await iframe.content_frame()
-                if frame_handle:
-                    # Cache the frame for future use
-                    self.frame_cache[frame_identifier] = frame_handle
-                    return frame_handle
-        except Exception as e:
-            logger.error(f"Error finding frame {frame_identifier}: {e}")
-        
-        # If all else fails, return main frame
-        logger.warning(f"Frame {frame_identifier} not found, falling back to main frame")
-        return self.page.main_frame
-    
-    async def _frame_has_id(self, frame: Frame, frame_id: str) -> bool:
-        """
-        Check if a frame has the specified ID.
-        
-        Args:
-            frame: Frame to check
-            frame_id: ID to check for
-            
-        Returns:
-            True if frame has the ID, False otherwise
-        """
-        try:
-            iframe_element = await self.page.query_selector(f"iframe[id='{frame_id}']")
-            if iframe_element:
-                frame_handle = await iframe_element.content_frame()
-                return frame_handle == frame
-        except Exception:
-            pass
-        return False
+                await target_frame.url() # Simple check
+                logger.debug(f"Returning frame '{frame_identifier}' from AdvancedFrameManager.")
+                return target_frame
+            except Error as e:
+                 logger.warning(f"Frame '{frame_identifier}' found in manager but seems detached: {e}. Falling back to main.")
+                 return self.page.main_frame
+        else:
+            logger.warning(f"Frame identifier '{frame_identifier}' not found by AdvancedFrameManager. Falling back to main frame.")
+            return self.page.main_frame
     
     async def extract_job_details(self) -> Dict[str, Any]:
         """

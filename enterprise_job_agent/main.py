@@ -26,6 +26,7 @@ from enterprise_job_agent.core.browser_manager import BrowserManager
 from enterprise_job_agent.core.job_extractor import extract_job_data
 from enterprise_job_agent.core.profile_manager import ProfileManager
 from enterprise_job_agent.core.crew_manager import JobApplicationCrew
+from enterprise_job_agent.core.frame_manager import AdvancedFrameManager
 
 # Configure logging
 logging.basicConfig(
@@ -290,13 +291,35 @@ async def run_job_application(
     os.makedirs(results_dir, exist_ok=True)
     logger.info(f"Created results directory: {results_dir}")
     
-    # Initialize a browser manager for final screenshot if needed
-    browser_manager = None
-    
+    # --- Centralized Browser Manager Initialization --- 
+    browser_manager = None # Define here for finally block access
+    frame_manager = None
     try:
-        # Extract job data
+        # Instantiate managers
+        # Frame manager needs page, so start browser first
+        temp_bm_for_startup = BrowserManager(headless=headless)
+        if not await temp_bm_for_startup.start():
+             logger.error("Failed to start browser during initial setup")
+             return {"success": False, "error": "Browser startup failed"}
+             
+        page = await temp_bm_for_startup.get_page()
+        frame_manager = AdvancedFrameManager(page)
+        # Create the main browser manager, passing the frame manager
+        browser_manager = BrowserManager(headless=headless, frame_manager=frame_manager)
+        # Assign the already started components from temp manager
+        browser_manager.playwright = temp_bm_for_startup.playwright
+        browser_manager.browser = temp_bm_for_startup.browser
+        browser_manager.context = temp_bm_for_startup.context
+        browser_manager.page = temp_bm_for_startup.page
+        # We don't need the temp manager anymore
+        del temp_bm_for_startup
+        
+        logger.info("BrowserManager and AdvancedFrameManager initialized.")
+        # --- End Centralized Browser Manager Initialization --- 
+
+        # Extract job data using the centralized browser manager
         logger.info(f"Extracting job data from {job_url}")
-        job_data = await extract_job_data(job_url, headless)
+        job_data = await extract_job_data(job_url, browser_manager)
         
         if not job_data:
             logger.error("Failed to extract job data")
@@ -318,10 +341,11 @@ async def run_job_application(
             except Exception as e:
                 logger.warning(f"Failed to move screenshot: {e}")
         
-        # Initialize job application crew
+        # Initialize job application crew, passing the browser manager
         logger.info("Initializing job application crew")
         crew_manager = JobApplicationCrew(
             llm=llm,
+            browser_manager=browser_manager, # Pass the manager
             verbose=verbose
         )
         
@@ -331,7 +355,8 @@ async def run_job_application(
             form_data=job_data["form_structure"],
             user_profile=user_profile,
             job_description=job_data["job_details"],
-            test_mode=test_mode
+            test_mode=test_mode,
+            job_url=job_url
         )
         
         # Save results
@@ -392,6 +417,7 @@ async def run_job_application(
     finally:
         # Close browser_manager if it was created
         if browser_manager:
+            logger.info("Closing centralized BrowserManager.")
             await browser_manager.close()
 
 def main():
