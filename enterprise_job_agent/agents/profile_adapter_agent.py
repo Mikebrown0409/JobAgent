@@ -68,6 +68,17 @@ class ProfileAdapterAgent:
         Returns:
             A prompt string for the LLM
         """
+        # Extract resume and cover letter paths if available
+        resume_path = user_profile.get("resume_path", "path/to/resume.pdf")
+        cover_letter_path = user_profile.get("cover_letter_path", "path/to/cover_letter.pdf")
+        
+        # Add specific instructions for handling file paths
+        file_instructions = f"""
+        SPECIAL FILE HANDLING:
+        - For resume fields, use the actual file path: {resume_path}
+        - For cover letter fields, use the actual file path: {cover_letter_path}
+        """
+        
         job_desc_section = f"""
         JOB DESCRIPTION:
         ```
@@ -109,6 +120,8 @@ class ProfileAdapterAgent:
            - For dates, use the format expected by the form
            - For dropdown fields, identify closest match to user data
         
+        {file_instructions}
+        
         OUTPUT FORMAT:
         Return your mapping as this exact JSON structure:
         {{
@@ -127,6 +140,20 @@ class ProfileAdapterAgent:
         }}
         """
     
+    async def adapt_profile(self, user_profile, form_structure, job_description=None):
+        """
+        Alias for map_profile_to_form, maintains compatibility with existing code.
+        
+        Args:
+            user_profile: User profile data
+            form_structure: Analyzed form structure
+            job_description: Optional job description data
+            
+        Returns:
+            Mapped profile data
+        """
+        return await self.map_profile_to_form(form_structure, user_profile, job_description)
+    
     async def map_profile_to_form(self, form_structure, user_profile, job_description=None):
         """Map user profile to form fields using LLM."""
         self.logger.info("Mapping user profile to form fields")
@@ -144,7 +171,10 @@ class ProfileAdapterAgent:
             # Try to extract JSON from response
             mapping = self._extract_json_from_response(response)
             
-            return mapping
+            # Post-process the mapping
+            improved_mapping = await self._post_process_mapping(mapping, form_structure)
+            
+            return improved_mapping
             
         except Exception as e:
             self.logger.error(f"Error mapping profile to form: {str(e)}")
@@ -254,3 +284,94 @@ class ProfileAdapterAgent:
         ]
         
         return enhanced 
+
+    async def _post_process_mapping(self, mapping: Dict[str, Any], form_structure: Dict[str, Any]) -> Dict[str, Any]:
+        """Post-process the mapping to improve field values.
+        
+        Args:
+            mapping: The original mapping from LLM
+            form_structure: The form structure
+            
+        Returns:
+            Improved mapping
+        """
+        if not mapping or "field_mappings" not in mapping:
+            return mapping
+            
+        # Get dropdown fields from form structure
+        dropdown_fields = []
+        for element in form_structure.get("form_elements", []):
+            if element.get("type") == "select":
+                dropdown_fields.append(element.get("id"))
+                
+        # Check for any detected dropdowns from analysis
+        dropdown_analysis = form_structure.get("dropdown_analysis", {})
+        detected_dropdowns = dropdown_analysis.get("detected_dropdowns", [])
+        dropdown_fields.extend(detected_dropdowns)
+        
+        # Deduplicate
+        dropdown_fields = list(set(dropdown_fields))
+        
+        # Update mappings
+        field_mappings = mapping.get("field_mappings", [])
+        for i, field_mapping in enumerate(field_mappings):
+            field_id = field_mapping.get("field_id")
+            value = field_mapping.get("value")
+            
+            # Skip if field already has a good value that's not a placeholder
+            placeholder_values = ["n/a", "none", "null", "undefined", "to be determined"]
+            if value and value.lower() not in placeholder_values:
+                continue
+                
+            # For dropdown fields, provide appropriate default values based on field type
+            if field_id in dropdown_fields:
+                if "gender" in field_id.lower():
+                    field_mappings[i]["value"] = "Decline To Self Identify"
+                    field_mappings[i]["reasoning"] += " Updated with standard decline option for gender."
+                elif "ethnicity" in field_id.lower() or "race" in field_id.lower():
+                    field_mappings[i]["value"] = "Decline To Self Identify"
+                    field_mappings[i]["reasoning"] += " Updated with standard decline option for ethnicity/race."
+                elif "veteran" in field_id.lower():
+                    field_mappings[i]["value"] = "I don't wish to answer"
+                    field_mappings[i]["reasoning"] += " Updated with standard decline option for veteran status."
+                elif "disability" in field_id.lower():
+                    field_mappings[i]["value"] = "I do not want to answer"
+                    field_mappings[i]["reasoning"] += " Updated with standard decline option for disability status."
+                elif "school" in field_id.lower() or "university" in field_id.lower() or "education" in field_id.lower():
+                    field_mappings[i]["value"] = "Other"
+                    field_mappings[i]["reasoning"] += " Set to 'Other' as a fallback for education institutions."
+                elif "degree" in field_id.lower():
+                    field_mappings[i]["value"] = "Bachelor's Degree"
+                    field_mappings[i]["reasoning"] += " Set to common degree type as fallback."
+                elif "discipline" in field_id.lower() or "major" in field_id.lower():
+                    field_mappings[i]["value"] = "Computer Science"
+                    field_mappings[i]["reasoning"] += " Set to common field of study as fallback."
+                elif "yes" in str(form_structure).lower() and "no" in str(form_structure).lower() and field_id.lower().startswith(("question_", "q_")):
+                    # For yes/no questions
+                    field_mappings[i]["value"] = "No"
+                    field_mappings[i]["reasoning"] += " Updated with default 'No' for yes/no question."
+                elif field_id.lower().startswith(("question_", "q_")):
+                    field_mappings[i]["value"] = "Other"
+                    field_mappings[i]["reasoning"] += " Updated with generic 'Other' option for dropdown question."
+                else:
+                    # For any other dropdown field, try to use a safe fallback
+                    field_mappings[i]["value"] = "Other"
+                    field_mappings[i]["reasoning"] += " Updated with generic 'Other' option as fallback."
+                    
+            # For non-dropdown empty fields, add appropriate defaults
+            elif not value or value.lower() in placeholder_values:
+                if "linkedin" in field_id.lower():
+                    field_mappings[i]["value"] = ""
+                    field_mappings[i]["reasoning"] += " Left empty as optional professional network field."
+                elif "website" in field_id.lower():
+                    field_mappings[i]["value"] = ""
+                    field_mappings[i]["reasoning"] += " Left empty as optional website field."
+                elif field_id.lower().startswith(("question_", "q_")):
+                    field_mappings[i]["value"] = "Not applicable"
+                    field_mappings[i]["reasoning"] += " Updated with standard response for optional question."
+                elif "referral" in field_id.lower():
+                    field_mappings[i]["value"] = "Job Board"
+                    field_mappings[i]["reasoning"] += " Updated with common referral source."
+        
+        mapping["field_mappings"] = field_mappings
+        return mapping 

@@ -22,12 +22,24 @@ class StageInfo:
 class DiagnosticsManager:
     """Manages diagnostics for the job application process."""
     
-    def __init__(self):
-        """Initialize the diagnostics manager."""
+    def __init__(self, output_dir: Optional[str] = None, enabled: bool = True):
+        """Initialize the diagnostics manager.
+        
+        Args:
+            output_dir: Optional directory to save diagnostics
+            enabled: Whether diagnostics are enabled
+        """
         self.stages: Dict[str, StageInfo] = {}
         self.current_stage: Optional[str] = None
         self.logger = logging.getLogger(__name__)
         self.application_start_time = time.time()
+        self.output_dir = output_dir
+        self.enabled = enabled
+        
+        if output_dir:
+            import os
+            os.makedirs(output_dir, exist_ok=True)
+            self.logger.info(f"Diagnostics will be saved to {output_dir}")
         
     def start_stage(self, stage_name: str) -> None:
         """Start tracking a stage.
@@ -79,6 +91,25 @@ class DiagnosticsManager:
             self.logger.error(f"Stage failed: {error}")
         
         self.current_stage = None
+    
+    @contextmanager
+    def wrap_stage(self, stage_name: str):
+        """Context manager for tracking a stage.
+        
+        Args:
+            stage_name: Name of the stage
+        """
+        if not self.enabled:
+            yield
+            return
+            
+        self.start_stage(stage_name)
+        try:
+            yield
+            self.end_stage(True)
+        except Exception as e:
+            self.end_stage(False, error=str(e))
+            raise
     
     @contextmanager
     def track_stage(self, stage_name: str):

@@ -98,6 +98,39 @@ class FormAnalyzerAgent:
             system_prompt=SYSTEM_PROMPT
         )
     
+    async def analyze_form_with_browser(
+        self,
+        browser_manager,
+        url: str,
+        visible: bool = False
+    ) -> Dict[str, Any]:
+        """Analyze a form using a browser manager.
+        
+        This is a convenience method that extracts the HTML from the browser
+        and then uses analyze_form_html to analyze it.
+        
+        Args:
+            browser_manager: Browser manager to use
+            url: URL of the page
+            visible: Whether the browser is visible
+            
+        Returns:
+            Analyzed form structure
+        """
+        try:
+            # Get the HTML content from the browser
+            html_content = await browser_manager.get_page_html()
+            
+            # Use analyze_form_html to analyze the form
+            form_structure = self.analyze_form_html(html_content, url)
+            
+            return form_structure
+            
+        except Exception as e:
+            error_msg = f"Form analysis failed: {str(e)}"
+            self.logger.error(error_msg)
+            raise
+    
     async def analyze_form(
         self,
         form_data: Dict[str, Any],

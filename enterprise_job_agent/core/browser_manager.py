@@ -53,7 +53,7 @@ class BrowserManager:
             self.playwright = await async_playwright().start()
             self.browser = await self.playwright.chromium.launch(headless=not self.visible)
             self.context = await self.browser.new_context(
-                viewport={'width': 1280, 'height': 900},
+                viewport={'width': 1280, 'height': 1024},
                 user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.93 Safari/537.36'
             )
             self.page = await self.context.new_page()
@@ -63,6 +63,7 @@ class BrowserManager:
             
             if self.diagnostics_manager:
                 self.diagnostics_manager.end_stage(True)
+            self.logger.info("Browser initialized")
             return True
             
         except Exception as e:
@@ -170,6 +171,105 @@ class BrowserManager:
             self.logger.error(f"Error getting page HTML: {str(e)}")
             return ""
             
+    async def scroll_to_element(self, selector: str, frame_id: Optional[str] = None) -> bool:
+        """Scroll to make an element visible.
+        
+        Args:
+            selector: CSS selector for the element
+            frame_id: Optional frame ID if element is in a frame
+            
+        Returns:
+            True if scrolling succeeded, False otherwise
+        """
+        try:
+            # Sanitize the selector if it's numeric
+            safe_selector = self._sanitize_selector(selector)
+            
+            if frame_id:
+                frame = await self.frame_manager.get_frame_by_id(frame_id)
+                if not frame:
+                    self.logger.error(f"Frame {frame_id} not found")
+                    return False
+                await frame.scroll_into_view_if_needed(safe_selector)
+            else:
+                await self.page.query_selector(safe_selector)
+                await self.page.evaluate(f"""(selector) => {{
+                    const element = document.querySelector(selector);
+                    if (element) {{
+                        element.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+                        return true;
+                    }}
+                    return false;
+                }}""", safe_selector)
+            return True
+        except Exception as e:
+            self.logger.error(f"Error scrolling to element {selector}: {str(e)}")
+            return False
+            
+    def _sanitize_selector(self, selector: str) -> str:
+        """Sanitize a selector to ensure it's valid for CSS and JS operations.
+        
+        Args:
+            selector: The original selector string
+            
+        Returns:
+            A sanitized selector that will work with DOM operations
+        """
+        # If selector starts with # (ID selector)
+        if selector.startswith('#'):
+            selector_id = selector[1:]  # Remove the # prefix
+            
+            # For numeric IDs or IDs with numeric prefixes
+            if selector_id.isdigit() or selector_id[0].isdigit():
+                # Use attribute selector instead of ID selector for numeric IDs
+                return f"[id='{selector_id}']"
+                
+        return selector
+    
+    async def get_element_info(self, selector: str, frame_identifier: Optional[str] = None) -> Dict[str, Any]:
+        """Get detailed information about an element.
+        
+        Args:
+            selector: CSS selector for the element
+            frame_identifier: Optional frame identifier
+            
+        Returns:
+            Dictionary with element information
+        """
+        try:
+            frame = await self.get_frame(frame_identifier)
+            element = await frame.query_selector(selector)
+            
+            if not element:
+                self.logger.warning(f"Element {selector} not found")
+                return {}
+                
+            # Get element properties
+            tag_name = await element.evaluate("el => el.tagName.toLowerCase()")
+            
+            # Get attributes
+            attrs = await element.evaluate("""el => {
+                const result = {};
+                for (const attr of el.attributes) {
+                    result[attr.name] = attr.value;
+                }
+                return result;
+            }""")
+            
+            # Get classes as a list
+            classes = await element.evaluate("el => Array.from(el.classList)")
+            
+            return {
+                "tag_name": tag_name,
+                "attributes": attrs,
+                "classes": classes,
+                "selector": selector
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error getting element info for {selector}: {str(e)}")
+            return {}
+            
     async def wait_for_load(self, timeout: int = 30000) -> bool:
         """Wait for the page to load fully.
         
@@ -198,10 +298,21 @@ class BrowserManager:
                     await self.browser.close()
                 if self.playwright:
                     await self.playwright.stop()
-            except Exception as e:
-                self.logger.error(f"Error closing browser: {str(e)}")
-            finally:
+                    
+                # Reset variables
                 self.page = None
                 self.context = None
                 self.browser = None
-                self.playwright = None 
+                self.playwright = None
+            except Exception as e:
+                self.logger.error(f"Error closing browser: {str(e)}")
+                if self.diagnostics_manager:
+                    self.diagnostics_manager.end_stage(False)
+
+    def get_page(self):
+        """Get the current page object.
+        
+        Returns:
+            The current page object
+        """
+        return self.page 

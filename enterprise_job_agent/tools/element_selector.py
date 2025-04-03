@@ -28,46 +28,84 @@ class ElementSelector:
         self.logger = logger
         self.selector_cache: Dict[str, str] = {}
     
+    async def _normalize_selector(self, selector: str) -> str:
+        """
+        Normalize CSS selector for consistent usage.
+        Handles ID normalization and potential selector syntax issues.
+        
+        Args:
+            selector: Original CSS selector
+            
+        Returns:
+            Normalized CSS selector
+        """
+        # Check if this is an ID selector that starts with '#'
+        if selector.startswith('#'):
+            selector_id = selector[1:]  # Remove the '#'
+            
+            # Check if the ID starts with a digit, which is invalid in CSS without escaping
+            if selector_id and selector_id[0].isdigit():
+                # CSS escape for IDs that start with a digit
+                # Format: #\3XXXXX where XXXXX is the codepoint in hex
+                codepoint = ord(selector_id[0])
+                escaped_id = f"\\3{codepoint:x} {selector_id[1:]}"
+                selector = f"#{escaped_id}"
+            
+            # Handle special characters that need escaping in CSS selectors
+            for char in [':', '.', '[', ']', '(', ')', '+', '~', '>', '|', '*']:
+                if char in selector_id:
+                    # Apply proper escaping by replacing special character with \char
+                    selector_id = selector_id.replace(char, f"\\{char}")
+                    selector = f"#{selector_id}"
+        
+        return selector
+
     async def wait_for_element(
         self,
         selector: str,
-        frame: Optional[Frame] = None,
+        frame: Optional[Any] = None,
         timeout: int = 5000,
-        state: str = "visible"
-    ) -> Optional[ElementHandle]:
-        """Wait for an element to be present and visible.
+        visible: bool = True
+    ) -> Any:
+        """Wait for an element to be ready for interaction.
         
         Args:
-            selector: CSS selector
-            frame: Optional frame to search in
+            selector: CSS selector for the element
+            frame: Frame to search in (optional)
             timeout: Timeout in milliseconds
-            state: Element state to wait for (visible, hidden, stable)
+            visible: Whether the element should be visible
             
         Returns:
-            ElementHandle if found, None otherwise
+            Element handle if found, None otherwise
         """
         if self.diagnostics_manager:
             self.diagnostics_manager.start_stage(f"wait_for_element_{selector}")
             
         try:
-            context = frame or self.browser.page
+            # Normalize selector for CSS compatibility
+            normalized_selector = await self._normalize_selector(selector)
+            
+            # Determine context (frame or page)
+            context = frame if frame else self.browser.page
+            
+            # Wait for element
             element = await context.wait_for_selector(
-                selector,
-                state=state,
+                normalized_selector,
+                state="visible" if visible else "attached",
                 timeout=timeout
             )
             
             if self.diagnostics_manager:
                 self.diagnostics_manager.end_stage(True)
+                
             return element
             
         except Exception as e:
-            if self.diagnostics_manager:
-                self.diagnostics_manager.end_stage(
-                    False,
-                    error=str(e)
-                )
             self.logger.debug(f"Element not found: {selector} - {str(e)}")
+            
+            if self.diagnostics_manager:
+                self.diagnostics_manager.end_stage(False, error=str(e))
+                
             return None
     
     async def find_element(

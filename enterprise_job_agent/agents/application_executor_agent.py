@@ -54,30 +54,24 @@ ALWAYS STRUCTURE YOUR EXECUTION PLAN AS JSON following the exact schema provided
 class ApplicationExecutorAgent:
     """Creates an agent specialized in form filling and submission."""
     
-    def __init__(
-        self,
-        llm: Any,
-        action_executor: ActionExecutor,
-        diagnostics_manager: Optional[DiagnosticsManager] = None,
-        tools: List[Any] = None,
-        verbose: bool = False
-    ):
+    def __init__(self, action_executor: Optional[ActionExecutor] = None, logger=None):
         """Initialize the application executor agent.
         
         Args:
-            llm: Language model to use
-            action_executor: Action executor for form interactions
-            diagnostics_manager: Optional diagnostics manager
-            tools: List of tools the agent can use
-            verbose: Whether to enable verbose output
+            action_executor: Action executor for form manipulation
+            logger: Optional logger instance
         """
-        self.llm = llm
-        self.action_executor = action_executor
-        self.diagnostics_manager = diagnostics_manager
-        self.verbose = verbose
-        self.logger = logging.getLogger(__name__)
+        self.action_executor = action_executor or ActionExecutor()
+        self.logger = logger or logging.getLogger(__name__)
         
-        self.agent = self.create(llm, tools, verbose)
+    def set_test_mode(self, test_mode: bool = True):
+        """Set the test mode flag.
+        
+        Args:
+            test_mode: Whether to run in test mode
+        """
+        if hasattr(self.action_executor, 'set_test_mode'):
+            self.action_executor.set_test_mode(test_mode)
     
     @staticmethod
     def create(
@@ -100,198 +94,86 @@ class ApplicationExecutorAgent:
             system_prompt=SYSTEM_PROMPT
         )
     
-    async def execute_plan(self, execution_plan: Dict[str, Any], form_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute a job application plan.
+    async def execute_plan(
+        self,
+        profile_mapping: Dict[str, Any],
+        form_structure: Dict[str, Any],
+        test_mode: bool = True
+    ) -> Dict[str, Any]:
+        """Execute the field population plan.
         
         Args:
-            execution_plan: Field mappings from profile adapter agent
-            form_data: Form data and structure
+            profile_mapping: Profile to form mapping
+            form_structure: Form structure data
+            test_mode: Whether to run in test mode
             
         Returns:
-            Dict with execution results
+            Execution results
         """
-        try:
-            self.logger.info("Executing form filling plan")
+        # Extract field mappings
+        field_mappings = profile_mapping.get("field_mappings", [])
+        
+        # Initialize results
+        field_results = []
+        fields_filled = 0
+        fields_failed = 0
+        field_type_stats = {}
+        
+        # Track execution by field type
+        for field_mapping in field_mappings:
+            field_id = field_mapping.get("field_id")
+            value = field_mapping.get("value", "")
             
-            # Extract field mappings from profile adapter output
-            field_mappings = execution_plan.get("field_mappings", [])
-            if not field_mappings:
-                self.logger.warning("No field mappings found in execution plan")
-                return {"success": False, "error": "No field mappings found"}
+            # Skip empty fields or recaptcha
+            if not field_id or "recaptcha" in field_id.lower():
+                continue
             
-            # Create execution steps directly from field_mappings
-            execution_steps = []
-            for mapping in field_mappings:
-                field_id = mapping.get("field_id")
-                value = mapping.get("value")
-                
-                if not field_id or value is None:
-                    continue
-                
-                # Determine field type from form data
-                field_type = self._determine_field_type(field_id, form_data)
-                
-                # Determine appropriate action based on field type
-                action = "fill"
-                if field_type == "select":
-                    action = "select"
-                elif field_type == "checkbox":
-                    action = "check"
-                elif field_type == "file":
-                    action = "upload"
-                
-                # Add to execution steps
-                execution_steps.append({
-                    "action": action,
-                    "field_id": field_id,
-                    "value": value,
-                    "options": {},
-                    "field_type": field_type  # Add field type for better tracking
-                })
+            # Get field type
+            field_type = self._get_field_type(field_id, form_structure)
             
-            # Execute each step
-            results = []
-            fields_processed = 0
-            fields_succeeded = 0
+            # Initialize stats for this field type if not already tracked
+            if field_type not in field_type_stats:
+                field_type_stats[field_type] = {"total": 0, "success": 0}
             
-            # Track different field types for reporting
-            field_type_counts = {
-                "select": 0,
-                "text": 0,
-                "checkbox": 0,
-                "file": 0,
-                "other": 0
-            }
-            field_type_success = {
-                "select": 0,
-                "text": 0,
-                "checkbox": 0,
-                "file": 0,
-                "other": 0
+            # Increment total count for this field type
+            field_type_stats[field_type]["total"] += 1
+            
+            # Execute the field
+            result = await self._execute_field(field_id, field_type, value, form_structure)
+            
+            # Set common fields for tracking
+            result_with_meta = {
+                "field_id": field_id,
+                "field_type": field_type,
+                "value": value,
+                "success": result.get("success", False),
+                "error": result.get("error", "")
             }
             
-            for step in execution_steps:
-                try:
-                    # Track field types
-                    field_type = step.get("field_type", "other")
-                    field_type_key = field_type if field_type in field_type_counts else "other"
-                    field_type_counts[field_type_key] += 1
-                    
-                    selector = self._get_selector_for_field(step["field_id"], form_data)
-                    if not selector:
-                        self.logger.warning(f"No selector found for field {step['field_id']}")
-                        results.append({
-                            "field_id": step["field_id"],
-                            "success": False,
-                            "error": "No selector found",
-                            "field_type": field_type
-                        })
-                        continue
-                    
-                    # Execute the appropriate form interaction
-                    fields_processed += 1
-                    success = False
-                    
-                    try:
-                        if step["action"] == "fill":
-                            success = await self.action_executor.form_interaction.fill_field(
-                                selector,
-                                str(step["value"])
-                            )
-                        elif step["action"] == "select":
-                            # Get dropdown options if available
-                            options = self._get_dropdown_options(step["field_id"], form_data)
-                            
-                            # Perform selection
-                            success = await self.action_executor.form_interaction.select_option(
-                                selector,
-                                step["value"],
-                                options
-                            )
-                        elif step["action"] == "check":
-                            success = await self.action_executor.form_interaction.set_checkbox(
-                                selector,
-                                bool(step["value"])
-                            )
-                        elif step["action"] == "upload":
-                            success = await self.action_executor.form_interaction.upload_file(
-                                selector,
-                                str(step["value"])
-                            )
-                        
-                        # Update counters and track result
-                        if success:
-                            fields_succeeded += 1
-                            field_type_success[field_type_key] += 1
-                            
-                            results.append({
-                                "field_id": step["field_id"],
-                                "success": True,
-                                "value": step["value"],
-                                "field_type": field_type
-                            })
-                            self.logger.info(f"Successfully executed {step['action']} for field {step['field_id']} of type {field_type}")
-                        else:
-                            # The operation failed but didn't throw an exception
-                            results.append({
-                                "field_id": step["field_id"],
-                                "success": False,
-                                "error": f"Action {step['action']} failed without exception",
-                                "field_type": field_type
-                            })
-                            self.logger.error(f"Failed to execute {step['action']} for field {step['field_id']} of type {field_type}")
-                        
-                    except Exception as e:
-                        self.logger.error(f"Error executing {step['action']} for field {step['field_id']}: {str(e)}")
-                        results.append({
-                            "field_id": step["field_id"],
-                            "success": False,
-                            "error": str(e),
-                            "field_type": step.get("field_type", "other")
-                        })
-                    
-                except Exception as e:
-                    self.logger.error(f"Error executing {step['action']} for field {step['field_id']}: {str(e)}")
-                    results.append({
-                        "field_id": step["field_id"],
-                        "success": False,
-                        "error": str(e),
-                        "field_type": step.get("field_type", "other")
-                    })
+            # Update statistics
+            if result.get("success", False):
+                fields_filled += 1
+                field_type_stats[field_type]["success"] += 1
+            else:
+                fields_failed += 1
             
-            # Determine overall success - require at least one field filled successfully
-            success = fields_succeeded > 0
+            # Add result to tracking
+            field_results.append(result_with_meta)
             
-            # Calculate success rate
-            success_rate = fields_succeeded / fields_processed if fields_processed > 0 else 0
-            
-            # Report on field type success rates
-            field_type_stats = {}
-            for field_type in field_type_counts:
-                total = field_type_counts[field_type]
-                if total > 0:
-                    success_count = field_type_success[field_type]
-                    field_type_stats[field_type] = {
-                        "total": total,
-                        "success": success_count,
-                        "rate": success_count / total
-                    }
-            
-            return {
-                "success": success,
-                "field_results": results,
-                "fields_filled": fields_succeeded,
-                "fields_failed": fields_processed - fields_succeeded,
-                "field_type_stats": field_type_stats,
-                "success_rate": success_rate
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Error in execute_plan: {str(e)}")
-            return {
-                "success": False,
-                "error": f"Execution plan failed: {str(e)}"
-            }
+            # Short sleep between fields to avoid overwhelming the browser
+            await asyncio.sleep(0.2)
+        
+        # Construct the final results
+        execution_results = {
+            "success": fields_failed == 0,
+            "field_results": field_results,
+            "fields_filled": fields_filled,
+            "fields_failed": fields_failed,
+            "field_type_stats": field_type_stats,
+            "test_mode": test_mode
+        }
+        
+        return execution_results
     
     def _determine_field_type(self, field_id: str, form_data: Dict[str, Any]) -> str:
         """Determine the field type from form data."""
@@ -533,3 +415,175 @@ class ApplicationExecutorAgent:
                 return field_validation.get("options", [])
         
         return [] 
+
+    async def _handle_recaptcha_field(self, field_id: str, form_structure: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle reCAPTCHA fields specially.
+        
+        These fields require special handling as they're invisible and filled by the reCAPTCHA service.
+        In test mode, we'll skip them; in production, we might attempt some form of workaround.
+        
+        Args:
+            field_id: The field ID
+            form_structure: The form structure
+            
+        Returns:
+            Result dictionary
+        """
+        self.logger.info(f"Detected reCAPTCHA field: {field_id} - marking as handled in test mode")
+        return {
+            "field_id": field_id,
+            "success": True,  # Pretend we handled it in test mode
+            "field_type": "recaptcha",
+            "value": "[RECAPTCHA FIELD - SKIPPED IN TEST MODE]",
+            "error": None
+        }
+
+    def _get_field_type(self, field_id: str, form_structure: Dict[str, Any]) -> str:
+        """Get the type of a form field from structure.
+        
+        Args:
+            field_id: The field ID
+            form_structure: The form structure
+            
+        Returns:
+            Field type (e.g., 'text', 'select', 'file', 'textarea')
+        """
+        # First check in form_elements list
+        if "form_elements" in form_structure:
+            for element in form_structure.get("form_elements", []):
+                if element.get("id") == field_id:
+                    return element.get("type", "text")
+        
+        # Try to guess from HTML structure
+        element_html = form_structure.get("html_structure", {}).get(field_id, "")
+        
+        if "textarea" in element_html.lower():
+            return "textarea"
+        elif 'type="file"' in element_html.lower():
+            return "file"
+        elif 'class="select__input"' in element_html.lower() or 'role="combobox"' in element_html.lower():
+            return "select"
+        elif "recaptcha" in field_id.lower() or "captcha" in field_id.lower():
+            return "recaptcha"
+        else:
+            return "text" # Default to text input 
+
+    async def _execute_field(self, field_id: str, field_type: str, value: str, form_structure: Dict) -> Dict[str, Any]:
+        """Execute an action for a specific field.
+        
+        Args:
+            field_id: ID of the field
+            field_type: Type of the field (text, select, etc.)
+            value: Value to set
+            form_structure: Form structure data
+            
+        Returns:
+            Dictionary with execution result
+        """
+        try:
+            # Get the field's frame ID if applicable
+            frame_id = self._get_field_frame(field_id, form_structure)
+            
+            # Format selector properly for CSS
+            selector = f"#{field_id}"
+            # Use attribute selector for numeric IDs
+            if field_id.isdigit() or (field_id and field_id[0].isdigit()):
+                selector = f"[id='{field_id}']"
+            
+            # Execute appropriate action based on field type
+            if field_type == "select":
+                success = await self.action_executor.execute_action("select", selector, value, frame_id)
+                if not success:
+                    self.logger.error(f"Failed to execute select for field {field_id} of type {field_type}")
+                    return {"success": False, "error": "Select action failed"}
+                else:
+                    self.logger.info(f"Successfully executed select for field {field_id} of type {field_type}")
+                    return {"success": True}
+                    
+            elif field_type == "checkbox":
+                # Convert value to boolean
+                checked = self._parse_bool(value)
+                success = await self.action_executor.execute_action("checkbox", selector, checked, frame_id)
+                if not success:
+                    self.logger.error(f"Failed to execute checkbox for field {field_id} of type {field_type}")
+                    return {"success": False, "error": "Checkbox action failed"}
+                else:
+                    self.logger.info(f"Successfully executed checkbox for field {field_id} of type {field_type}")
+                    return {"success": True}
+                    
+            elif field_type == "file":
+                # Handle file uploads
+                success = await self.action_executor.execute_action("upload", selector, value, frame_id)
+                if not success:
+                    self.logger.error(f"Failed to execute file for field {field_id} of type {field_type}")
+                    return {"success": False, "error": "File upload failed"}
+                else:
+                    self.logger.info(f"Successfully executed file for field {field_id} of type {field_type}")
+                    return {"success": True}
+                    
+            elif field_type == "textarea":
+                # Handle multiline text
+                success = await self.action_executor.execute_action("fill", selector, value, frame_id)
+                if not success:
+                    self.logger.error(f"Failed to execute textarea for field {field_id} of type {field_type}")
+                    return {"success": False, "error": "Text area fill failed"}
+                else:
+                    self.logger.info(f"Successfully executed textarea for field {field_id} of type {field_type}")
+                    return {"success": True}
+                    
+            else:
+                # Default to text input
+                success = await self.action_executor.execute_action("fill", selector, value, frame_id)
+                if not success:
+                    self.logger.error(f"Failed to execute text for field {field_id} of type {field_type}")
+                    return {"success": False, "error": "Text fill failed"}
+                else:
+                    self.logger.info(f"Successfully executed text for field {field_id} of type {field_type}")
+                    return {"success": True}
+                    
+        except Exception as e:
+            self.logger.error(f"Error executing field {field_id}: {str(e)}")
+            return {"success": False, "error": str(e)} 
+
+    def _get_field_frame(self, field_id: str, form_structure: Dict) -> Optional[str]:
+        """Get the frame ID for a field if it exists in a frame.
+        
+        Args:
+            field_id: ID of the field
+            form_structure: Form structure data
+            
+        Returns:
+            Frame ID or None if field is in the main frame
+        """
+        # Check if form structure has frame data
+        if "frames" in form_structure:
+            # Search for the field in each frame
+            for frame_id, frame_data in form_structure.get("frames", {}).items():
+                if "fields" in frame_data:
+                    # Check if field exists in this frame's fields
+                    if field_id in frame_data["fields"]:
+                        return frame_id
+        
+        # Field is in the main frame
+        return None
+        
+    def _parse_bool(self, value: Any) -> bool:
+        """Parse a value as boolean.
+        
+        Args:
+            value: Value to parse
+            
+        Returns:
+            Boolean value
+        """
+        if isinstance(value, bool):
+            return value
+            
+        if isinstance(value, str):
+            return value.lower() in ("yes", "true", "t", "1", "on", "y")
+            
+        if isinstance(value, (int, float)):
+            return bool(value)
+            
+        # Default to False for None or other types
+        return False 

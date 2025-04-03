@@ -404,6 +404,46 @@ async def analyze_job_application(
         logger.info("Closing centralized BrowserManager.")
         await browser_manager.close()
 
+async def execute_form(
+    form_structure: Dict[str, Any],
+    profile_mapping: Dict[str, Any],
+    browser_manager: BrowserManager,
+    visible: bool = False,
+    test_mode: bool = True
+) -> Dict[str, Any]:
+    """Execute form filling based on the form structure and profile mapping.
+    
+    Args:
+        form_structure: Analyzed form structure
+        profile_mapping: Profile to form field mapping
+        browser_manager: Browser manager instance
+        visible: Whether to make the browser visible
+        test_mode: Whether to run in test mode without submitting
+        
+    Returns:
+        Dictionary with execution results
+    """
+    logger.info("Executing form filling")
+    
+    # Initialize the action executor
+    action_executor = ActionExecutor(browser_manager=browser_manager)
+    
+    # Important: Set test_mode to False in the action executor to make it 
+    # actually interact with the browser instead of just simulating
+    action_executor.set_test_mode(test_mode)
+    
+    # Initialize the application executor agent
+    application_executor = ApplicationExecutorAgent(action_executor=action_executor)
+    
+    # Execute the plan
+    results = await application_executor.execute_plan(
+        profile_mapping=profile_mapping,
+        form_structure=form_structure,
+        test_mode=test_mode
+    )
+    
+    return results
+
 def main():
     """Main entry point for the job application agent."""
     parser = argparse.ArgumentParser(description="Enterprise Job Application Agent")
