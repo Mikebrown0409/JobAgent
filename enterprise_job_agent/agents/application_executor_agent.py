@@ -1,10 +1,25 @@
 """Application Executor Agent for filling and submitting job applications."""
 
 import logging
-from typing import Dict, Any, List
+import asyncio
+import json
+from typing import Dict, Any, List, Optional, Tuple
+from dataclasses import dataclass
 from crewai import Agent
 
+from enterprise_job_agent.core.action_executor import ActionExecutor, ActionContext
+from enterprise_job_agent.core.diagnostics_manager import DiagnosticsManager
+from enterprise_job_agent.tools.field_identifier import FieldInfo, FieldType
+
 logger = logging.getLogger(__name__)
+
+@dataclass
+class ExecutionResult:
+    """Result of an execution operation."""
+    success: bool
+    stage_name: str
+    field_results: Dict[str, Tuple[bool, Optional[str]]]
+    error: Optional[str] = None
 
 SYSTEM_PROMPT = """You are an expert Application Execution Specialist focusing on job applications.
 
@@ -39,23 +54,37 @@ ALWAYS STRUCTURE YOUR EXECUTION PLAN AS JSON following the exact schema provided
 class ApplicationExecutorAgent:
     """Creates an agent specialized in form filling and submission."""
     
+    def __init__(
+        self,
+        llm: Any,
+        action_executor: ActionExecutor,
+        diagnostics_manager: Optional[DiagnosticsManager] = None,
+        tools: List[Any] = None,
+        verbose: bool = False
+    ):
+        """Initialize the application executor agent.
+        
+        Args:
+            llm: Language model to use
+            action_executor: Action executor for form interactions
+            diagnostics_manager: Optional diagnostics manager
+            tools: List of tools the agent can use
+            verbose: Whether to enable verbose output
+        """
+        self.llm = llm
+        self.action_executor = action_executor
+        self.diagnostics_manager = diagnostics_manager
+        self.verbose = verbose
+        
+        self.agent = self.create(llm, tools, verbose)
+    
     @staticmethod
     def create(
         llm: Any,
         tools: List[Any] = None,
         verbose: bool = False
     ) -> Agent:
-        """
-        Create an Application Executor Agent.
-        
-        Args:
-            llm: Language model to use
-            tools: List of tools the agent can use
-            verbose: Whether to enable verbose output
-            
-        Returns:
-            Agent instance
-        """
+        """Create an Application Executor Agent."""
         return Agent(
             role="Application Execution Specialist",
             goal="Execute job applications with precision, overcoming obstacles and ensuring completion",
@@ -70,9 +99,173 @@ class ApplicationExecutorAgent:
             system_prompt=SYSTEM_PROMPT
         )
     
+    async def execute_plan(self, execution_plan: Dict[str, Any], form_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a job application plan.
+        
+        Args:
+            execution_plan: Field mappings from profile adapter agent
+            form_data: Form data and structure
+            
+        Returns:
+            Dict with execution results
+        """
+        try:
+            self.logger.info("Executing form filling plan")
+            
+            # Extract field mappings from profile adapter output
+            field_mappings = execution_plan.get("field_mappings", [])
+            if not field_mappings:
+                self.logger.warning("No field mappings found in execution plan")
+                return {"success": False, "error": "No field mappings found"}
+            
+            # Create execution steps directly from field_mappings
+            execution_steps = []
+            for mapping in field_mappings:
+                field_id = mapping.get("field_id")
+                value = mapping.get("value")
+                
+                if not field_id or value is None:
+                    continue
+                
+                # Determine field type from form data
+                field_type = self._determine_field_type(field_id, form_data)
+                
+                # Determine appropriate action based on field type
+                action = "fill"
+                if field_type == "select":
+                    action = "select"
+                elif field_type == "checkbox":
+                    action = "check"
+                elif field_type == "file":
+                    action = "upload"
+                
+                # Add to execution steps
+                execution_steps.append({
+                    "action": action,
+                    "field_id": field_id,
+                    "value": value,
+                    "options": {}
+                })
+            
+            # Execute each step
+            results = []
+            for step in execution_steps:
+                try:
+                    selector = self._get_selector_for_field(step["field_id"], form_data)
+                    if not selector:
+                        self.logger.warning(f"No selector found for field {step['field_id']}")
+                        results.append({
+                            "field_id": step["field_id"],
+                            "success": False,
+                            "error": "No selector found"
+                        })
+                        continue
+                    
+                    # Execute the appropriate form interaction
+                    if step["action"] == "fill":
+                        await self.action_executor.form_interaction.fill_field(
+                            selector,
+                            str(step["value"])
+                        )
+                    elif step["action"] == "select":
+                        await self.action_executor.form_interaction.select_option(
+                            selector,
+                            step["value"],
+                            step.get("options", {}).get("options", [])
+                        )
+                    elif step["action"] == "check":
+                        await self.action_executor.form_interaction.set_checkbox(
+                            selector,
+                            bool(step["value"])
+                        )
+                    elif step["action"] == "upload":
+                        await self.action_executor.form_interaction.upload_file(
+                            selector,
+                            str(step["value"])
+                        )
+                    
+                    results.append({
+                        "field_id": step["field_id"],
+                        "success": True,
+                        "value": step["value"]
+                    })
+                    self.logger.info(f"Successfully executed {step['action']} for field {step['field_id']}")
+                    
+                except Exception as e:
+                    self.logger.error(f"Error executing {step['action']} for field {step['field_id']}: {str(e)}")
+                    results.append({
+                        "field_id": step["field_id"],
+                        "success": False,
+                        "error": str(e)
+                    })
+            
+            # Determine overall success
+            success = any(r["success"] for r in results)
+            return {
+                "success": success,
+                "field_results": results,
+                "fields_filled": len([r for r in results if r["success"]]),
+                "fields_failed": len([r for r in results if not r["success"]])
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error in execute_plan: {str(e)}")
+            return {
+                "success": False,
+                "error": f"Execution plan failed: {str(e)}"
+            }
+    
+    def _determine_field_type(self, field_id: str, form_data: Dict[str, Any]) -> str:
+        """Determine the field type from form data."""
+        # First check form_elements
+        form_elements = form_data.get("form_elements", [])
+        for element in form_elements:
+            if element.get("id") == field_id:
+                return element.get("type", "text")
+        
+        # Check in sections if available
+        if "form_structure" in form_data:
+            for section in form_data.get("form_structure", {}).get("sections", []):
+                for field in section.get("fields", []):
+                    if field.get("id") == field_id:
+                        return field.get("type", "text")
+        
+        # Default to text
+        return "text"
+    
+    def _get_selector_for_field(self, field_id: str, form_data: Dict[str, Any]) -> Optional[str]:
+        """Get the selector for a field from form data."""
+        # Check form_elements
+        form_elements = form_data.get("form_elements", [])
+        for element in form_elements:
+            if element.get("id") == field_id:
+                return f"#{field_id}"  # Default to ID selector
+        
+        # Check in sections if available
+        if "form_structure" in form_data:
+            for section in form_data.get("form_structure", {}).get("sections", []):
+                for field in section.get("fields", []):
+                    if field.get("id") == field_id:
+                        # Use the first selector strategy if available
+                        strategies = field.get("selector_strategies", [])
+                        if strategies and len(strategies) > 1:
+                            return strategies[1]  # Use the second strategy (usually the ID selector)
+                        return f"#{field_id}"  # Default to ID selector
+        
+        return None
+
+    def _importance_to_float(self, importance: str) -> float:
+        """Convert importance string to float value."""
+        importance_map = {
+            "high": 1.0,
+            "medium": 0.5,
+            "low": 0.1
+        }
+        return importance_map.get(importance.lower(), 0.1)
+
     @staticmethod
     def create_execution_prompt(
-        form_structure: Dict[str, Any],
+        form_data: Dict[str, Any],
         field_mappings: Dict[str, Any],
         test_mode: bool = False
     ) -> str:
@@ -80,89 +273,55 @@ class ApplicationExecutorAgent:
         Create a prompt for executing a job application.
         
         Args:
-            form_structure: Analyzed form structure
+            form_data: Form data and structure
             field_mappings: Field mappings from profile
             test_mode: Whether to run in test mode
             
         Returns:
-            A prompt string for the LLM
+            Execution prompt for the LLM
         """
-        return f"""
-        TASK: Create a detailed execution plan for filling and submitting this job application form.
+        mode = "TEST MODE" if test_mode else "LIVE MODE"
         
+        task_part = f"""
+        TASK:
+        Execute the following job application form in {mode}.
+        """
+        
+        form_part = f"""
         FORM STRUCTURE:
-        ```
-        {form_structure}
-        ```
+        {json.dumps(form_data, indent=2)}
+        """
         
+        mappings_part = f"""
         FIELD MAPPINGS:
-        ```
-        {field_mappings}
-        ```
+        {json.dumps(field_mappings, indent=2)}
+        """
         
-        TEST MODE: {'Yes - Do not actually submit the application' if test_mode else 'No - Proceed with submission'}
+        instructions_part = """
+        INSTRUCTIONS:
+        1. Analyze the form structure and field mappings
+        2. Create an execution plan that fills out the form efficiently
+        3. Return your plan as a JSON array of steps, where each step has:
+           - action: The action to take (e.g., "fill", "select", "upload")
+           - field_id: The ID of the field to interact with
+           - value: The value to input or select
+           - options: Optional parameters for the action
         
-        EXECUTION REQUIREMENTS:
-        
-        1. Field Filling Order:
-           - Start with high-importance required fields
-           - Then handle medium-importance fields
-           - Finally complete optional fields
-           - Special fields (file uploads) should be handled separately with explicit instructions
-        
-        2. Specific Handling Per Field Type:
-           - Text inputs: Simple value filling
-           - Dropdowns: Select closest matching option, ensure dropdown triggers correctly
-           - Checkboxes/Radios: Select appropriate values
-           - File uploads: Provide exact file paths and upload steps
-           - Text areas: Format content with proper line breaks
-        
-        3. Error Prevention:
-           - After each field group, include a verification step
-           - Provide fallback values for required fields
-           - For dropdowns, include alternative selector strategies
-           - For locations or schools, use fuzzy matching with 70% threshold
-        
-        4. Post-Filling Actions:
-           - Verify all required fields are filled
-           - Handle any popup confirmation dialogs
-           - Scroll to and locate the submit button
-           - Execute final submission (if not in test mode)
-        
-        OUTPUT FORMAT:
-        Provide your execution plan as this exact JSON structure:
-        {
-            "execution_plan": {
-                "stages": [
-                    {
-                        "name": "stage_name",
-                        "description": "What this stage accomplishes",
-                        "operations": [
-                            {
-                                "type": "operation_type",
-                                "field_id": "target_field_id",
-                                "value": "value_to_enter",
-                                "selector": "field_selector",
-                                "verification": "how to verify success",
-                                "fallback": "fallback approach if needed"
-                            }
-                        ]
-                    }
-                ],
-                "submission": {
-                    "should_submit": false,
-                    "submit_selector": "selector for submit button",
-                    "confirmation_handling": "how to handle confirmation dialogs"
-                }
+        Example output format:
+        [
+            {
+                "action": "fill",
+                "field_id": "name",
+                "value": "John Smith",
+                "options": {}
             },
-            "error_handling": {
-                "common_issues": [
-                    {
-                        "issue": "potential issue description",
-                        "detection": "how to detect this issue",
-                        "resolution": "how to resolve this issue"
-                    }
-                ]
+            {
+                "action": "select",
+                "field_id": "education",
+                "value": "Bachelor's Degree",
+                "options": {"exact_match": true}
             }
-        }
-        """ 
+        ]
+        """
+        
+        return task_part + form_part + mappings_part + instructions_part 
