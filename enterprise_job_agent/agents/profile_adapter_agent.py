@@ -1,38 +1,40 @@
 """Agent for adapting user profiles to job applications."""
 
 import logging
+import re
+import json
 from typing import Dict, Any, Optional
+from crewai import LLM
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are an expert Profile Optimization Specialist focused on job applications.
+SYSTEM_PROMPT = """You are an expert Profile Mapping Specialist.
 
-TASK:
-Map candidate profiles to job application form fields with precision and strategic optimization.
+YOUR TASK:
+Map user profile data to job application form fields accurately and effectively.
 
 YOUR EXPERTISE:
-- Tailoring candidate profiles to specific job requirements
-- Intelligently mapping profile data to form fields
-- Optimizing content based on field importance
-- Ensuring accurate format and validation compliance
-- Highlighting candidate strengths strategically
+- Deep understanding of job application forms and fields
+- Expert at matching profile data to form requirements
+- Skilled at handling complex form structures
+- Experience with various ATS systems
+- Knowledge of industry-standard field mappings
 
-APPROACH:
-1. Identify the most relevant profile data for each form field
-2. Prioritize content based on field importance (required first)
-3. Format content to meet field-specific requirements
-4. Optimize high-impact fields with tailored, job-relevant information
-5. Maintain accuracy while presenting information in the best light
+APPROACH YOUR ANALYSIS:
+1. Review form structure and requirements
+2. Analyze user profile data
+3. Create optimal field mappings
+4. Handle special cases and transformations
+5. Validate mappings meet requirements
 
-ATTENTION TO DETAIL:
-- Match experience descriptions to job requirements
-- Format phone numbers, dates and addresses according to field expectations
-- For dropdown fields, find the closest matching option
-- For education fields, format school names exactly as needed
-- Include all required information, prioritize relevant achievements
+FOCUS ON:
+- Required vs optional fields
+- Field type compatibility
+- Data formatting requirements
+- Special field handling (dropdowns, multi-select)
+- Default values for unmapped fields
 
-ALWAYS STRUCTURE RESPONSES AS JSON with the exact schema provided in the task.
-"""
+ALWAYS STRUCTURE RESPONSES AS JSON with the exact schema provided in the task."""
 
 class ProfileAdapterAgent:
     """Agent for adapting user profiles to job applications."""
@@ -47,6 +49,7 @@ class ProfileAdapterAgent:
         """
         self.llm = llm
         self.verbose = verbose
+        self.logger = logging.getLogger(__name__)
     
     def create_mapping_prompt(
         self,
@@ -108,103 +111,106 @@ class ProfileAdapterAgent:
         
         OUTPUT FORMAT:
         Return your mapping as this exact JSON structure:
-        {
+        {{
             "field_mappings": [
-                {
+                {{
                     "field_id": "original_field_id",
                     "value": "optimized value for this field",
                     "importance": "high|medium|low",
                     "reasoning": "Brief explanation of why this value was chosen"
-                }
+                }}
             ],
             "strategic_approach": [
                 "Strategic insight 1 about how to approach this application",
                 "Strategic insight 2 about key strengths to emphasize"
             ]
-        }
+        }}
         """
     
-    def map_profile_to_form(
-        self,
-        form_structure: Dict[str, Any],
-        user_profile: Dict[str, Any],
-        job_description: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """
-        Map user profile data to form fields.
-        
-        Args:
-            form_structure: Analyzed form structure
-            user_profile: User profile data
-            job_description: Optional job description
-            
-        Returns:
-            Mapping of profile data to form fields
-        """
-        logger.info("Mapping user profile to form fields")
-        
-        # Create the mapping prompt
-        prompt = self.create_mapping_prompt(form_structure, user_profile, job_description)
-        
+    async def map_profile_to_form(self, form_structure, user_profile, job_description=None):
+        """Map user profile to form fields using LLM."""
+        self.logger.info("Mapping user profile to form fields")
         try:
-            # Get mapping from LLM
-            if isinstance(self.llm, dict) and 'invoke' in dir(self.llm):
-                # Handle CrewAI style LLM
-                response = self.llm.invoke([
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt}
-                ])
-                mapping_text = response
-            else:
-                # Try direct invocation for other LLM types
-                response = self.llm(
-                    [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": prompt}
-                    ]
-                )
-                mapping_text = response.get("content", "")
-                
-            logger.debug(f"Received mapping: {mapping_text[:500]}...")
+            # Create mapping prompt
+            mapping_prompt = self.create_mapping_prompt(form_structure, user_profile, job_description)
             
-            # Parse the JSON response
+            try:
+                # Use the call method for the latest CrewAI LLM interface
+                # Format as a user message according to documentation
+                response = self.llm.call(mapping_prompt)
+                
+            except Exception as e:
+                # Fall back to using a basic mapping
+                self.logger.error(f"LLM call failed: {str(e)}")
+                return self._create_basic_mapping(form_structure, user_profile)
+            
+            # Log the mapping for debugging
+            self.logger.debug(f"Received mapping from LLM: {response}")
+            
+            # Try to extract JSON from response
+            mapping = self._extract_json_from_response(response)
+            
+            if not mapping:
+                self.logger.warning("Failed to get valid mapping from LLM, using basic mapping")
+                mapping = self._create_basic_mapping(form_structure, user_profile)
+            
+            return mapping
+            
+        except Exception as e:
+            self.logger.error(f"Error mapping profile to form: {str(e)}")
+            # Return basic mapping as fallback
+            return self._create_basic_mapping(form_structure, user_profile)
+    
+    def _extract_json_from_response(self, response):
+        """Extract JSON from the LLM response."""
+        try:
+            # Try direct JSON parsing
             import json
             import re
             
             # Try to extract JSON from the response (it might be wrapped in markdown code blocks)
-            json_match = re.search(r'```(?:json)?(.*?)```', mapping_text, re.DOTALL)
+            json_match = re.search(r'```(?:json)?(.*?)```', response, re.DOTALL)
             if json_match:
-                json_str = json_match.group(1)
-                mapping = json.loads(json_str)
+                json_str = json_match.group(1).strip()
+                return json.loads(json_str)
             else:
                 # Try parsing the whole response as JSON
-                mapping = json.loads(mapping_text)
-            
-            return mapping
+                return json.loads(response)
         except Exception as e:
-            logger.error(f"Error mapping profile to form: {e}")
-            # Return a basic mapping for important fields that we can extract directly
-            field_mappings = []
+            self.logger.error(f"Error extracting JSON from response: {str(e)}")
+            return None
             
-            # Basic extraction for common fields if we failed to get mapping from LLM
-            for section in form_structure.get("form_structure", {}).get("sections", []):
-                for element in section.get("fields", []):
-                    field_id = element.get("id", "")
-                    
-                    # Only map required fields in fallback mode
-                    if not element.get("required", False):
-                        continue
-                    
-                    # Try to extract value based on field ID and label
-                    value = self._extract_fallback_value(element, user_profile)
-                    
+    def _create_basic_mapping(self, form_structure, user_profile):
+        """Create a basic mapping for important fields as fallback."""
+        field_mappings = []
+        
+        # Basic extraction for common fields if we failed to get mapping from LLM
+        for section in form_structure.get("form_structure", {}).get("sections", []):
+            for element in section.get("fields", []):
+                field_id = element.get("id", "")
+                
+                # Only map required fields in fallback mode
+                if not element.get("required", False):
+                    continue
+                
+                # Try to extract value based on field ID and label
+                value = self._extract_fallback_value(element, user_profile)
+                
+                if value:
                     field_mappings.append({
                         "field_id": field_id,
                         "value": value,
-                        "importance": "high" if element.get("required", False) else "medium"
+                        "importance": "high" if element.get("required", False) else "medium",
+                        "reasoning": "Basic fallback mapping for required field"
                     })
-            
-            return {"field_mappings": field_mappings}
+        
+        return {
+            "field_mappings": field_mappings,
+            "strategic_approach": [
+                "Using basic fallback mapping due to LLM error",
+                "Only mapping required fields with direct matches"
+            ]
+        }
     
     def _extract_fallback_value(self, element: Dict[str, Any], user_profile: Dict[str, Any]) -> str:
         """Extract a profile value for a form field as a fallback."""
