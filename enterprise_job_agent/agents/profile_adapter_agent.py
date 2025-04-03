@@ -134,15 +134,9 @@ class ProfileAdapterAgent:
             # Create mapping prompt
             mapping_prompt = self.create_mapping_prompt(form_structure, user_profile, job_description)
             
-            try:
-                # Use the call method for the latest CrewAI LLM interface
-                # Format as a user message according to documentation
-                response = self.llm.call(mapping_prompt)
-                
-            except Exception as e:
-                # Fall back to using a basic mapping
-                self.logger.error(f"LLM call failed: {str(e)}")
-                return self._create_basic_mapping(form_structure, user_profile)
+            # Use the call method for the latest CrewAI LLM interface
+            # Format as a user message according to documentation
+            response = self.llm.call(mapping_prompt)
             
             # Log the mapping for debugging
             self.logger.debug(f"Received mapping from LLM: {response}")
@@ -150,16 +144,15 @@ class ProfileAdapterAgent:
             # Try to extract JSON from response
             mapping = self._extract_json_from_response(response)
             
-            if not mapping:
-                self.logger.warning("Failed to get valid mapping from LLM, using basic mapping")
-                mapping = self._create_basic_mapping(form_structure, user_profile)
-            
             return mapping
             
         except Exception as e:
             self.logger.error(f"Error mapping profile to form: {str(e)}")
-            # Return basic mapping as fallback
-            return self._create_basic_mapping(form_structure, user_profile)
+            # Comment out the fallback mapping so we can see the real error
+            # return self._create_basic_mapping(form_structure, user_profile)
+            
+            # Instead, raise the exception so we can see what's happening
+            raise
     
     def _extract_json_from_response(self, response):
         """Extract JSON from the LLM response."""

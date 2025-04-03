@@ -75,6 +75,7 @@ class ApplicationExecutorAgent:
         self.action_executor = action_executor
         self.diagnostics_manager = diagnostics_manager
         self.verbose = verbose
+        self.logger = logging.getLogger(__name__)
         
         self.agent = self.create(llm, tools, verbose)
     
@@ -144,68 +145,145 @@ class ApplicationExecutorAgent:
                     "action": action,
                     "field_id": field_id,
                     "value": value,
-                    "options": {}
+                    "options": {},
+                    "field_type": field_type  # Add field type for better tracking
                 })
             
             # Execute each step
             results = []
+            fields_processed = 0
+            fields_succeeded = 0
+            
+            # Track different field types for reporting
+            field_type_counts = {
+                "select": 0,
+                "text": 0,
+                "checkbox": 0,
+                "file": 0,
+                "other": 0
+            }
+            field_type_success = {
+                "select": 0,
+                "text": 0,
+                "checkbox": 0,
+                "file": 0,
+                "other": 0
+            }
+            
             for step in execution_steps:
                 try:
+                    # Track field types
+                    field_type = step.get("field_type", "other")
+                    field_type_key = field_type if field_type in field_type_counts else "other"
+                    field_type_counts[field_type_key] += 1
+                    
                     selector = self._get_selector_for_field(step["field_id"], form_data)
                     if not selector:
                         self.logger.warning(f"No selector found for field {step['field_id']}")
                         results.append({
                             "field_id": step["field_id"],
                             "success": False,
-                            "error": "No selector found"
+                            "error": "No selector found",
+                            "field_type": field_type
                         })
                         continue
                     
                     # Execute the appropriate form interaction
-                    if step["action"] == "fill":
-                        await self.action_executor.form_interaction.fill_field(
-                            selector,
-                            str(step["value"])
-                        )
-                    elif step["action"] == "select":
-                        await self.action_executor.form_interaction.select_option(
-                            selector,
-                            step["value"],
-                            step.get("options", {}).get("options", [])
-                        )
-                    elif step["action"] == "check":
-                        await self.action_executor.form_interaction.set_checkbox(
-                            selector,
-                            bool(step["value"])
-                        )
-                    elif step["action"] == "upload":
-                        await self.action_executor.form_interaction.upload_file(
-                            selector,
-                            str(step["value"])
-                        )
+                    fields_processed += 1
+                    success = False
                     
-                    results.append({
-                        "field_id": step["field_id"],
-                        "success": True,
-                        "value": step["value"]
-                    })
-                    self.logger.info(f"Successfully executed {step['action']} for field {step['field_id']}")
+                    try:
+                        if step["action"] == "fill":
+                            success = await self.action_executor.form_interaction.fill_field(
+                                selector,
+                                str(step["value"])
+                            )
+                        elif step["action"] == "select":
+                            # Get dropdown options if available
+                            options = self._get_dropdown_options(step["field_id"], form_data)
+                            
+                            # Perform selection
+                            success = await self.action_executor.form_interaction.select_option(
+                                selector,
+                                step["value"],
+                                options
+                            )
+                        elif step["action"] == "check":
+                            success = await self.action_executor.form_interaction.set_checkbox(
+                                selector,
+                                bool(step["value"])
+                            )
+                        elif step["action"] == "upload":
+                            success = await self.action_executor.form_interaction.upload_file(
+                                selector,
+                                str(step["value"])
+                            )
+                        
+                        # Update counters and track result
+                        if success:
+                            fields_succeeded += 1
+                            field_type_success[field_type_key] += 1
+                            
+                            results.append({
+                                "field_id": step["field_id"],
+                                "success": True,
+                                "value": step["value"],
+                                "field_type": field_type
+                            })
+                            self.logger.info(f"Successfully executed {step['action']} for field {step['field_id']} of type {field_type}")
+                        else:
+                            # The operation failed but didn't throw an exception
+                            results.append({
+                                "field_id": step["field_id"],
+                                "success": False,
+                                "error": f"Action {step['action']} failed without exception",
+                                "field_type": field_type
+                            })
+                            self.logger.error(f"Failed to execute {step['action']} for field {step['field_id']} of type {field_type}")
+                        
+                    except Exception as e:
+                        self.logger.error(f"Error executing {step['action']} for field {step['field_id']}: {str(e)}")
+                        results.append({
+                            "field_id": step["field_id"],
+                            "success": False,
+                            "error": str(e),
+                            "field_type": step.get("field_type", "other")
+                        })
                     
                 except Exception as e:
                     self.logger.error(f"Error executing {step['action']} for field {step['field_id']}: {str(e)}")
                     results.append({
                         "field_id": step["field_id"],
                         "success": False,
-                        "error": str(e)
+                        "error": str(e),
+                        "field_type": step.get("field_type", "other")
                     })
             
-            # Determine overall success
-            success = any(r["success"] for r in results)
+            # Determine overall success - require at least one field filled successfully
+            success = fields_succeeded > 0
+            
+            # Calculate success rate
+            success_rate = fields_succeeded / fields_processed if fields_processed > 0 else 0
+            
+            # Report on field type success rates
+            field_type_stats = {}
+            for field_type in field_type_counts:
+                total = field_type_counts[field_type]
+                if total > 0:
+                    success_count = field_type_success[field_type]
+                    field_type_stats[field_type] = {
+                        "total": total,
+                        "success": success_count,
+                        "rate": success_count / total
+                    }
+            
             return {
                 "success": success,
                 "field_results": results,
-                "fields_filled": len([r for r in results if r["success"]]),
-                "fields_failed": len([r for r in results if not r["success"]])
+                "fields_filled": fields_succeeded,
+                "fields_failed": fields_processed - fields_succeeded,
+                "field_type_stats": field_type_stats,
+                "success_rate": success_rate
             }
             
         except Exception as e:
@@ -217,42 +295,149 @@ class ApplicationExecutorAgent:
     
     def _determine_field_type(self, field_id: str, form_data: Dict[str, Any]) -> str:
         """Determine the field type from form data."""
-        # First check form_elements
-        form_elements = form_data.get("form_elements", [])
-        for element in form_elements:
+        # List of common dropdown field patterns
+        dropdown_patterns = [
+            "school", "degree", "discipline", "education", "university", 
+            "location", "country", "state", "city", "ethnicity", 
+            "gender", "veteran_status", "disability_status", "race",
+            "major", "title", "role", "position", "department"
+        ]
+        
+        # First check if this is a commonly recognized dropdown field by pattern
+        field_name_lower = field_id.lower()
+        if any(pattern in field_name_lower for pattern in dropdown_patterns):
+            # Check if we have options for this field - strong indicator it's a dropdown
+            options = self._get_dropdown_options(field_id, form_data)
+            if options:
+                self.logger.debug(f"Field {field_id} identified as select based on pattern and available options")
+                return "select"
+            
+            # Additional validation - check field structure for dropdown indicators
+            # Check form elements
+            for element in form_data.get("form_elements", []):
+                if element.get("id") == field_id:
+                    # Direct indicators in the element
+                    if element.get("type") == "select" or "options" in element:
+                        self.logger.debug(f"Field {field_id} identified as select from element structure")
+                        return "select"
+                    # Check for dropdown class indicators
+                    element_class = element.get("class", "").lower()
+                    if any(class_indicator in element_class for class_indicator in ["dropdown", "select", "combo"]):
+                        self.logger.debug(f"Field {field_id} identified as select from class indicators")
+                        return "select"
+            
+            # Even without direct evidence, education and location fields are almost always dropdowns
+            high_confidence_dropdown_patterns = ["school", "degree", "discipline", "university", "education", "country", "state"]
+            if any(pattern in field_name_lower for pattern in high_confidence_dropdown_patterns):
+                self.logger.debug(f"Field {field_id} identified as select with high confidence based on naming pattern")
+                return "select"
+        
+        # First check form_elements for direct type information
+        for element in form_data.get("form_elements", []):
             if element.get("id") == field_id:
-                return element.get("type", "text")
+                element_type = element.get("type", "text")
+                
+                # Check for <select> tag or presence of options
+                if element_type == "select" or "options" in element:
+                    self.logger.debug(f"Field {field_id} identified as select from form_elements")
+                    return "select"
+                
+                return element_type
         
         # Check in sections if available
         if "form_structure" in form_data:
             for section in form_data.get("form_structure", {}).get("sections", []):
                 for field in section.get("fields", []):
                     if field.get("id") == field_id:
-                        return field.get("type", "text")
+                        field_type = field.get("type", "text")
+                        
+                        # Check for <select> tag or presence of options
+                        if field_type == "select" or "options" in field:
+                            self.logger.debug(f"Field {field_id} identified as select from form_structure")
+                            return "select"
+                        
+                        # Check field label for dropdown indicators
+                        field_label = field.get("label", "").lower()
+                        if field_label and any(pattern in field_label for pattern in dropdown_patterns):
+                            self.logger.debug(f"Field {field_id} identified as select from label pattern: {field_label}")
+                            return "select"
+                            
+                        return field_type
         
+        # Look at HTML element tag if available
+        if "element_tags" in form_data:
+            element_tags = form_data.get("element_tags", {})
+            if field_id in element_tags:
+                tag = element_tags[field_id].lower()
+                if tag == "select":
+                    self.logger.debug(f"Field {field_id} identified as select from element_tags")
+                    return "select"
+                elif tag == "input":
+                    input_type = form_data.get("input_types", {}).get(field_id, "text")
+                    if input_type == "file":
+                        return "file"
+                    elif input_type in ["checkbox", "radio"]:
+                        return "checkbox"
+        
+        # Check for HTML structure indicators
+        html_structure = form_data.get("html_structure", {})
+        if field_id in html_structure:
+            field_html = html_structure.get(field_id, "").lower()
+            if field_html and any(indicator in field_html for indicator in ["<select", "dropdown", "combobox"]):
+                self.logger.debug(f"Field {field_id} identified as select from HTML structure")
+                return "select"
+            
         # Default to text
         return "text"
     
     def _get_selector_for_field(self, field_id: str, form_data: Dict[str, Any]) -> Optional[str]:
         """Get the selector for a field from form data."""
-        # Check form_elements
-        form_elements = form_data.get("form_elements", [])
-        for element in form_elements:
-            if element.get("id") == field_id:
-                return f"#{field_id}"  # Default to ID selector
-        
-        # Check in sections if available
+        # Check if the field has specific selector strategies in form_structure
         if "form_structure" in form_data:
             for section in form_data.get("form_structure", {}).get("sections", []):
                 for field in section.get("fields", []):
                     if field.get("id") == field_id:
                         # Use the first selector strategy if available
                         strategies = field.get("selector_strategies", [])
-                        if strategies and len(strategies) > 1:
-                            return strategies[1]  # Use the second strategy (usually the ID selector)
-                        return f"#{field_id}"  # Default to ID selector
+                        
+                        # School, degree, and discipline fields often need special handling
+                        is_education_field = any(edu_field in field_id for edu_field in ["school", "degree", "discipline"])
+                        
+                        if strategies:
+                            if len(strategies) > 1:
+                                # If it's an education field or dropdown, try to find a better selector than just the ID
+                                if is_education_field or field.get("type") == "select" or "options" in field:
+                                    # Try different selector strategies
+                                    for strategy in strategies:
+                                        # Prefer selectors that look like complete CSS selectors rather than just IDs
+                                        if strategy.startswith('#') and '--' in strategy:
+                                            return strategy
+                                        elif '[name=' in strategy or '[id=' in strategy:
+                                            return strategy
+                                
+                                # Default to the second strategy (usually the ID selector)
+                                return strategies[1]
+                            else:
+                                return strategies[0]
         
-        return None
+        # Check form_elements
+        form_elements = form_data.get("form_elements", [])
+        for element in form_elements:
+            if element.get("id") == field_id:
+                selector = element.get("selector")
+                if selector:
+                    return selector
+                
+                # For dropdowns, try to find a more specific selector
+                if element.get("type") == "select" or "options" in element:
+                    selectors = element.get("selector_strategies", [])
+                    if selectors and len(selectors) > 0:
+                        return selectors[0]
+                
+                return f"#{field_id}"  # Default to ID selector
+        
+        # Fall back to a simple ID selector
+        return f"#{field_id}"
 
     def _importance_to_float(self, importance: str) -> float:
         """Convert importance string to float value."""
@@ -325,3 +510,26 @@ class ApplicationExecutorAgent:
         """
         
         return task_part + form_part + mappings_part + instructions_part 
+
+    def _get_dropdown_options(self, field_id: str, form_data: Dict[str, Any]) -> List[str]:
+        """Get dropdown options for a field if available."""
+        # Check form_elements
+        form_elements = form_data.get("form_elements", [])
+        for element in form_elements:
+            if element.get("id") == field_id and "options" in element:
+                return element.get("options", [])
+        
+        # Check in sections if available
+        if "form_structure" in form_data:
+            for section in form_data.get("form_structure", {}).get("sections", []):
+                for field in section.get("fields", []):
+                    if field.get("id") == field_id and "options" in field:
+                        return field.get("options", [])
+        
+        # Look in validation_data
+        if "validation_data" in form_data:
+            field_validation = form_data.get("validation_data", {}).get(field_id, {})
+            if "options" in field_validation:
+                return field_validation.get("options", [])
+        
+        return [] 

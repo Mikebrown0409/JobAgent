@@ -12,6 +12,7 @@ from typing import Dict, Any, Optional, List
 import re
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 # LLM imports
 # Import CrewAI's LLM class
@@ -24,6 +25,13 @@ from enterprise_job_agent.core.profile_manager import ProfileManager
 from enterprise_job_agent.core.crew_manager import JobApplicationCrew
 from enterprise_job_agent.core.frame_manager import AdvancedFrameManager
 from enterprise_job_agent.config import Config
+from enterprise_job_agent.core.diagnostics_manager import DiagnosticsManager
+from enterprise_job_agent.core.action_executor import ActionExecutor
+from enterprise_job_agent.agents.form_analyzer_agent import FormAnalyzerAgent
+from enterprise_job_agent.agents.profile_adapter_agent import ProfileAdapterAgent
+from enterprise_job_agent.agents.application_executor_agent import ApplicationExecutorAgent
+from enterprise_job_agent.tools.form_interaction import FormInteraction
+from enterprise_job_agent.tools.element_selector import ElementSelector
 
 # Configure logging
 logging.basicConfig(
@@ -54,14 +62,14 @@ def initialize_llm(model_name: str = "gemini-2.0-flash", **kwargs):
         raise ValueError("GEMINI_API_KEY is required but not found.")
 
     try:
-        # Initialize CrewAI's LLM class directly with the provider/model_name format
+        # Create and return a CrewAI LLM instance
         llm = LLM(
             model=model_name,
             api_key=gemini_api_key,
             **kwargs
         )
             
-        logger.info("CrewAI LLM instance initialized successfully.")
+        logger.info("CrewAI LLM initialized successfully.")
         return llm
     except Exception as e:
         # Use a more specific error message if possible
@@ -77,313 +85,360 @@ def initialize_llm(model_name: str = "gemini-2.0-flash", **kwargs):
 #    ...
 
 # Remove unused parameters from run_job_application
-async def run_job_application(
-    job_url: str,
-    test_mode: bool,
-    verbose: bool,
-    visible: bool,
-    output_dir: str,
-    config: Config,
+async def analyze_job_application(
+    url: str,
+    test_mode: bool = True,
+    visible: bool = False,
+    user_profile_path: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    verbose: bool = False
 ) -> Dict[str, Any]:
-    """
-    Run the job application process using the Gemini AI Agent.
+    """Analyze and process a job application.
     
     Args:
-        job_url: URL of the job posting
-        test_mode: Whether to run in test mode (no actual submission)
-        verbose: Whether to enable verbose logging
-        visible: Whether to run the browser in visible mode
-        output_dir: Directory to save test results
-        config: Configuration object
+        url: URL of the job application
+        test_mode: Whether to run in test mode (don't submit)
+        visible: Whether to show the browser
+        user_profile_path: Path to the user profile JSON
+        output_dir: Directory to save results
+        verbose: Whether to enable verbose output
         
     Returns:
-        Results of the job application process
+        Dict containing the results
     """
-    logger.info(f"Starting job application process for {job_url}")
-    if test_mode:
-        logger.info("RUNNING IN TEST MODE - No job application will be submitted")
+    if verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
     
-    browser_manager = None
-    results_dir = None  # Initialize results_dir here
-    job_id = str(uuid.uuid4())[:8] # Define job_id early for error reporting
-    logger.info(f"Job application ID: {job_id}")
-
+    # Generate a unique job ID
+    job_id = f"job_{uuid.uuid4().hex[:8]}"
+    
+    # Setup output directory
+    if not output_dir:
+        output_dir = Path(__file__).parent / "test_results" / job_id
+    else:
+        output_dir = Path(output_dir) / job_id
+    
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Setup diagnostics
+    diagnostics_manager = DiagnosticsManager()
+    
+    # Create and initialize browser manager
+    browser_manager = BrowserManager(visible=visible, diagnostics_manager=diagnostics_manager)
+    
     try:
-        logger.info("Initializing Gemini LLM for CrewAI")
-        llm = initialize_llm()
-        logger.info("LLM initialized.")
-
-        # Construct profile path from config
-        profiles_dir = os.path.expanduser(config.get('profiles.profiles_dir', '~/.jobagent/profiles'))
-        default_profile_name = config.get('profiles.default_profile', 'default')
-        profile_path = os.path.join(profiles_dir, f"{default_profile_name}.json")
-        logger.info(f"Loading user profile from: {profile_path}")
-        profile_manager = ProfileManager(profile_path)
-        user_profile = profile_manager.get_profile()
+        with diagnostics_manager.track_stage("initialization"):
+            await browser_manager.initialize()
         
-        # Create output directory for results - moved here after potential profile errors
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        # Use the output_dir argument passed to the function
-        base_output_dir = os.path.join(script_dir, output_dir) 
-        results_dir = os.path.join(base_output_dir, f"job_{job_id}")
-        os.makedirs(results_dir, exist_ok=True)
-        logger.info(f"Created results directory: {results_dir}")
+        # Initialize tools
+        element_selector = ElementSelector(browser_manager, diagnostics_manager)
+        form_interaction = FormInteraction(browser_manager, element_selector, diagnostics_manager)
         
-        # --- Centralized Browser Manager Initialization --- 
-        frame_manager = None
+        # Initialize action executor
+        action_executor = ActionExecutor(
+            browser_manager=browser_manager,
+            element_selector=element_selector,
+            form_interaction=form_interaction,
+            diagnostics_manager=diagnostics_manager
+        )
+        
+        # Load LLM
+        # Use CrewAI's LLM class with Gemini model
         try:
-            # Instantiate managers
-            # Frame manager needs page, so start browser first
-            temp_bm_for_startup = BrowserManager(headless=not visible)
-            if not await temp_bm_for_startup.start():
-                 logger.error("Failed to start browser during initial setup")
-                 return {"success": False, "error": "Browser startup failed"}
-                 
-            page = await temp_bm_for_startup.get_page()
-            frame_manager = AdvancedFrameManager(page)
-            # Create the main browser manager, passing the frame manager
-            browser_manager = BrowserManager(headless=not visible, frame_manager=frame_manager)
-            # Assign the already started components from temp manager
-            browser_manager.playwright = temp_bm_for_startup.playwright
-            browser_manager.browser = temp_bm_for_startup.browser
-            browser_manager.context = temp_bm_for_startup.context
-            browser_manager.page = temp_bm_for_startup.page
-            # We don't need the temp manager anymore
-            del temp_bm_for_startup
+            import os
+            from crewai import LLM
             
-            logger.info("BrowserManager and AdvancedFrameManager initialized.")
-            # --- End Centralized Browser Manager Initialization --- 
-
-            # Extract job data using the centralized browser manager
-            logger.info(f"Extracting job data from {job_url}")
-            job_data = await extract_job_data(job_url, browser_manager)
+            # Use environment variable for API key
+            api_key = os.environ.get("GEMINI_API_KEY")
+            if not api_key:
+                logger.warning("No GEMINI_API_KEY found in environment variables. Some functionalities might be limited.")
             
-            if not job_data:
-                logger.error("Failed to extract job data")
-                return {"success": False, "error": "Failed to extract job data"}
-            
-            # Save extracted form data for debugging
-            job_data_file = f"{results_dir}/job_data.json"
-            with open(job_data_file, "w") as f:
-                json.dump(job_data, f, indent=2)
-            logger.info(f"Job data saved to {job_data_file}")
-            
-            # Save screenshot to the results directory
-            if "screenshot_path" in job_data and job_data["screenshot_path"]:
-                try:
-                    new_screenshot_path = f"{results_dir}/job_posting.png"
-                    os.rename(job_data["screenshot_path"], new_screenshot_path)
-                    job_data["screenshot_path"] = new_screenshot_path
-                    logger.info(f"Screenshot saved to {new_screenshot_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to move screenshot: {e}")
-            
-            # Initialize job application crew, passing the browser manager
-            logger.info("Initializing job application crew")
-            crew_manager = JobApplicationCrew(
-                llm=llm,
-                browser_manager=browser_manager, # Pass the manager
-                verbose=verbose
+            # Initialize LLM with CrewAI's LLM class
+            llm = LLM(
+                model="gemini/gemini-2.0-flash",
+                api_key=api_key,
+                temperature=0.2
             )
             
-            # Execute job application process
-            logger.info(f"Executing job application process {'(TEST MODE)' if test_mode else ''}")
-            result = await crew_manager.execute_job_application_process(
-                form_data=job_data["form_structure"],
-                user_profile=user_profile,
-                job_description=job_data["job_details"],
-                test_mode=test_mode,
-                job_url=job_url
-            )
-            
-            # Save results
-            result_file = f"{results_dir}/results.json"
-            with open(result_file, "w") as f:
-                json.dump(result, f, indent=2)
-            
-            # Take a final screenshot in test mode
-            if test_mode and browser_manager:
-                try:
-                    screenshot_path = f"{results_dir}/final_form.png"
-                    await browser_manager.take_screenshot(screenshot_path)
-                    logger.info(f"Final form screenshot saved to {screenshot_path}")
-                    result["test_mode_screenshot"] = screenshot_path
-                except Exception as screenshot_error:
-                    logger.warning(f"Failed to take final screenshot: {screenshot_error}")
-            
-            success_state = "completed successfully" if result["success"] else "failed"
-            test_mode_indicator = " (TEST MODE - No submission made)" if test_mode else ""
-            logger.info(f"Job application {success_state}{test_mode_indicator}")
-            logger.info(f"Results saved to {result_file}")
-            
-            # Add test mode information to result
-            if test_mode:
-                result["test_mode"] = True
-                result["test_mode_info"] = "This was a test run. No actual job application was submitted."
-            
-            # Add results directory to the result
-            result["results_dir"] = results_dir
-            result["report_file"] = result_file
-            
-            return result
-        except Exception as e:
-            logger.error(f"Error during browser/crew phase: {str(e)}", exc_info=True)
-            # Save error information (check if results_dir exists)
-            if results_dir:
-                error_file = os.path.join(results_dir, "error.json") # Use os.path.join
-                try:
-                    with open(error_file, "w", encoding='utf-8') as f: # Add encoding
-                        json.dump({
-                            "error": str(e),
-                            "job_id": job_id,
-                            "stage": "browser/crew",
-                            "test_mode": test_mode,
-                            "timestamp": datetime.now().isoformat()
-                        }, f, indent=2)
-                    logger.info(f"Error details saved to {error_file}")
-                except Exception as write_error:
-                    logger.warning(f"Failed to save error details: {write_error}")
-            
-            # Return error structure
-            return {
-                "success": False, 
-                "error": str(e), 
-                "job_id": job_id, 
-                "test_mode": test_mode,
-                "results_dir": results_dir # Can be None if error occurred early
-            }
-            
-    except Exception as initial_error: # Catch errors during init (LLM, profile, results_dir)
-        logger.error(f"Error during initialization phase: {str(initial_error)}", exc_info=True)
-        
-        # Attempt to save error information (check if results_dir exists)
-        # Note: results_dir might still be None here if the error was before its creation
-        if results_dir: 
-            error_file = os.path.join(results_dir, "error.json") # Use os.path.join
+            # Test that the LLM works by calling a simple prompt
+            logger.debug("Testing LLM with a simple prompt")
             try:
-                with open(error_file, "w", encoding='utf-8') as f: # Add encoding
-                    json.dump({
-                        "error": str(initial_error),
-                        "job_id": job_id,
-                        "stage": "initialization",
-                        "test_mode": test_mode,
-                        "timestamp": datetime.now().isoformat()
-                    }, f, indent=2)
-                logger.info(f"Initialization error details saved to {error_file}")
-            except Exception as write_error:
-                logger.warning(f"Failed to save initialization error details: {write_error}")
-        else:
-             logger.warning("results_dir not created, cannot save initialization error details to file.")
+                test_result = llm.call("Say hello!")
+                logger.debug(f"LLM test result: {test_result}")
+            except Exception as e:
+                logger.error(f"LLM test failed: {e}")
+                raise ValueError(f"LLM initialization succeeded but test call failed: {e}")
+                
+        except ImportError as e:
+            logger.error(f"Failed to import required LLM libraries: {e}")
+            raise
         
-        # Return error structure
+        # Initialize agents
+        form_analyzer_agent = FormAnalyzerAgent(llm=llm, verbose=verbose)
+        profile_adapter_agent = ProfileAdapterAgent(llm=llm, verbose=verbose)
+        application_executor_agent = ApplicationExecutorAgent(
+            llm=llm,
+            action_executor=action_executor,
+            diagnostics_manager=diagnostics_manager,
+            verbose=verbose
+        )
+        
+        # Load user profile
+        if user_profile_path:
+            with open(user_profile_path, "r") as f:
+                user_profile = json.load(f)
+        else:
+            # Use a sample profile for testing
+            user_profile = {
+                "personal_info": {
+                    "first_name": "Alex",
+                    "last_name": "Chen",
+                    "email": "alex.chen@example.com",
+                    "phone": "555-123-4567",
+                    "location": {
+                        "city": "San Francisco",
+                        "state": "California",
+                        "country": "United States"
+                    }
+                },
+                "education": [
+                    {
+                        "school": "University of California, Berkeley",
+                        "degree": "Bachelor of Science",
+                        "field_of_study": "Computer Science",
+                        "graduation_date": "2021-05-15"
+                    }
+                ],
+                "work_experience": [
+                    {
+                        "company": "Tech Innovations Inc.",
+                        "title": "Software Engineer",
+                        "location": "San Francisco, CA",
+                        "start_date": "2021-06-01",
+                        "end_date": None,
+                        "is_current": True,
+                        "description": "Developing cloud-based solutions using modern frameworks"
+                    },
+                    {
+                        "company": "StartUp Labs",
+                        "title": "Software Engineering Intern",
+                        "location": "Palo Alto, CA",
+                        "start_date": "2020-05-01",
+                        "end_date": "2020-08-31",
+                        "is_current": False,
+                        "description": "Worked on front-end development using React"
+                    }
+                ],
+                "skills": [
+                    "JavaScript", "React", "Node.js", "Python", "Java", "Docker", "AWS"
+                ],
+                "languages": [
+                    {
+                        "language": "English",
+                        "proficiency": "Native"
+                    },
+                    {
+                        "language": "Mandarin",
+                        "proficiency": "Fluent"
+                    }
+                ],
+                "preferences": {
+                    "willing_to_relocate": True,
+                    "work_authorization": "US Citizen",
+                    "desired_salary": "Competitive",
+                    "desired_job_type": "Full-time"
+                },
+                "demographic_info": {
+                    "gender": "Male",
+                    "race": "White",
+                    "hispanic_ethnicity": "No",
+                    "disability_status": "No",
+                    "veteran_status": "No"
+                },
+                "projects": [
+                    {
+                        "title": "Community Marketplace",
+                        "description": "Built a full-stack marketplace application",
+                        "url": "https://github.com/alexchen/marketplace"
+                    }
+                ],
+                "certifications": [
+                    {
+                        "name": "AWS Certified Developer",
+                        "issuer": "Amazon Web Services",
+                        "date": "2022-03-01"
+                    }
+                ],
+                "links": {
+                    "linkedin": "https://linkedin.com/in/alexchen",
+                    "github": "https://github.com/alexchen",
+                    "portfolio": None
+                }
+            }
+        
+        # Navigate to the job URL
+        with diagnostics_manager.track_stage("navigation"):
+            logger.info(f"Navigating to {url}")
+            await browser_manager.goto(url)
+            await browser_manager.wait_for_load()
+        
+        # Extract form data from page
+        with diagnostics_manager.track_stage("form_extraction"):
+            logger.info("Extracting form data")
+            
+            # Get page HTML for enhanced form analysis
+            page_html = await browser_manager.get_page_html()
+            
+            # Use enhanced form analyzer to analyze HTML structure
+            form_structure = form_analyzer_agent.analyze_form_html(page_html, url)
+            
+            # Take a screenshot of the form
+            form_screenshot_path = output_dir / "initial_form.png"
+            await browser_manager.take_screenshot(str(form_screenshot_path))
+            
+            # Log structure
+            logger.debug(f"Form structure: {json.dumps(form_structure, indent=2)}")
+            
+            # Store form structure for debugging
+            with open(output_dir / "form_structure.json", "w") as f:
+                json.dump(form_structure, f, indent=2)
+        
+        # Generate a mapping from user profile to form fields
+        with diagnostics_manager.track_stage("profile_mapping"):
+            logger.info("Mapping user profile to form fields")
+            profile_mapping = await profile_adapter_agent.map_profile_to_form(user_profile, form_structure)
+            
+            # Store mapping for debugging
+            with open(output_dir / "profile_mapping.json", "w") as f:
+                json.dump(profile_mapping, f, indent=2)
+        
+        # Execute form filling
+        with diagnostics_manager.track_stage("form_execution"):
+            logger.info("Executing form filling")
+            execution_results = await application_executor_agent.execute_plan(profile_mapping, form_structure)
+            
+            # Store results for debugging
+            with open(output_dir / "execution_results.json", "w") as f:
+                json.dump(execution_results, f, indent=2)
+            
+            # Take final screenshot
+            final_screenshot_path = output_dir / "final_form.png"
+            await browser_manager.take_screenshot(str(final_screenshot_path))
+        
+        # Generate summary and store results
+        with open(output_dir / "results.json", "w") as f:
+            results = {
+                "job_id": job_id,
+                "url": url,
+                "test_mode": test_mode,
+                "execution_results": execution_results,
+                "diagnostics": diagnostics_manager.get_diagnostics()
+            }
+            json.dump(results, f, indent=2)
+        
+        logger.info(f"Job application completed successfully ({'TEST MODE - No submission made' if test_mode else 'SUBMITTED'})")
+        logger.info(f"Results saved to {output_dir / 'results.json'}")
+        
+        # Print detailed field execution results
+        field_results = execution_results.get("field_results", [])
+        fields_filled = execution_results.get("fields_filled", 0)
+        fields_failed = execution_results.get("fields_failed", 0)
+        field_type_stats = execution_results.get("field_type_stats", {})
+        
+        print("\n===== FIELD EXECUTION RESULTS =====")
+        print(f"Fields filled: {fields_filled}")
+        print(f"Fields failed: {fields_failed}")
+        print()
+        
+        # Print field type statistics
+        print("Field Type Statistics:")
+        for field_type, stats in field_type_stats.items():
+            success_rate = (stats["success"] / stats["total"]) * 100
+            print(f"  {field_type}: {stats['success']}/{stats['total']} successful ({success_rate:.1f}%)")
+        print()
+        
+        # Print detailed field results
+        print("Detailed Field Results:")
+        for result in field_results:
+            field_id = result.get("field_id", "")
+            success = result.get("success", False)
+            field_type = result.get("field_type", "unknown")
+            
+            if success:
+                value = result.get("value", "")
+                # Truncate long values
+                if isinstance(value, str) and len(value) > 30:
+                    value = value[:27] + "..."
+                print(f"  ✓ {field_id} ({field_type}): {value}")
+            else:
+                error = result.get("error", "Unknown error")
+                print(f"  ✗ {field_id} ({field_type}): ERROR: {error}")
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Error in job application process: {str(e)}")
+        
+        # Save error information
+        with open(output_dir / "error.json", "w") as f:
+            error_info = {
+                "error": str(e),
+                "diagnostics": diagnostics_manager.get_diagnostics() if diagnostics_manager else {}
+            }
+            json.dump(error_info, f, indent=2)
+        
+        # Take error screenshot if browser is available
+        try:
+            error_screenshot_path = output_dir / "error.png"
+            await browser_manager.take_screenshot(str(error_screenshot_path))
+        except:
+            pass
+        
         return {
-            "success": False, 
-            "error": str(initial_error), 
-            "job_id": job_id, 
-            "test_mode": test_mode,
-            "results_dir": results_dir # Will be None here
+            "success": False,
+            "error": str(e),
+            "job_id": job_id
         }
+    
     finally:
-        # Close browser_manager if it was created
-        if browser_manager:
-            logger.info("Closing centralized BrowserManager.")
-            await browser_manager.close()
+        logger.info("Closing centralized BrowserManager.")
+        await browser_manager.close()
 
 def main():
-    """Main entry point for the application."""
+    """Main entry point for the job application agent."""
     parser = argparse.ArgumentParser(description="Enterprise Job Application Agent")
-    
-    parser.add_argument(
-        "--job-url", 
-        type=str, 
-        required=True,
-        help="URL of the job posting"
-    )
-        
-    # Remove profile argument if handled by config
-    # parser.add_argument(
-    #     "--profile", 
-    #     type=str, 
-    #     help="Path to user profile JSON (default: uses config)"
-    # )
-        
-    parser.add_argument(
-        "--visible", 
-        action="store_true", 
-        help="Run with visible browser (default: headless)"
-    )
-    
-    parser.add_argument(
-        "--test", 
-        action="store_true", 
-        help="Run in test mode - no actual submission will be made"
-    )
-    
-    parser.add_argument(
-        "--verbose", 
-        action="store_true",
-        help="Enable verbose logging"
-    )
-
-    parser.add_argument(
-        '--output-dir', 
-        default='enterprise_job_agent/test_results', 
-        help='Directory to save test results'
-    )
+    parser.add_argument("action", choices=["apply", "analyze", "test"], help="Action to perform")
+    parser.add_argument("--url", required=True, help="URL of the job application")
+    parser.add_argument("--profile", help="Path to user profile JSON")
+    parser.add_argument("--output", help="Output directory for results")
+    parser.add_argument("--visible", action="store_true", help="Show the browser during execution")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
     
     args = parser.parse_args()
     
-    if args.test:
-        print("🧪 RUNNING IN TEST MODE - No actual job application will be submitted")
-        logger.info("Test mode enabled - application will not be submitted")
+    # Run the job application process
+    test_mode = args.action in ["test", "analyze"]
     
-    print(f"⏳ Processing job application for URL: {args.job_url}")
-    if args.visible:
-        print("🔍 Browser will be visible during execution")
-
-    # Load configuration
-    config = Config()
-
-    # API Key check is now implicitly handled by initialize_llm() raising an error
-        
     try:
-        # Call run_job_application without google_api_key
-        result = asyncio.run(run_job_application(
-            job_url=args.job_url, 
-            test_mode=args.test, 
-            verbose=args.verbose, 
-            visible=args.visible,
-            output_dir=args.output_dir,
-            config=config,
-            # google_api_key=args.google_api_key # Removed
-        ))
+        results = asyncio.run(
+            analyze_job_application(
+                url=args.url,
+                test_mode=test_mode,
+                visible=args.visible,
+                user_profile_path=args.profile,
+                output_dir=args.output,
+                verbose=args.verbose
+            )
+        )
         
-        if result["success"]:
-            if args.test:
-                print("✅ Test run completed successfully (No actual submission made)")
-                print(f"📊 Results saved to {result.get('report_file', 'job application result file')}")
-            else:
-                print("✅ Job application completed successfully")
-            sys.exit(0)
-        else:
-            error_msg = result.get('error', 'Unknown error')
-            if args.test:
-                print(f"❌ Test run failed: {error_msg}")
-                print("💡 This was only a test - no actual submission was attempted")
-            else:
-                print(f"❌ Job application failed: {error_msg}")
+        if results.get("success", False) is False and "error" in results:
+            logger.error(f"Job application failed: {results['error']}")
             sys.exit(1)
-    except ValueError as e:
-        # Catch the specific error from initialize_llm if key is missing
-        print(f"❌ Configuration Error: {e}")
-        logger.error(f"Configuration Error: {e}")
-        sys.exit(1)
-    except KeyboardInterrupt:
-        print("\n⚠️ Operation cancelled by user")
-        sys.exit(130)
+        else:
+            logger.info(f"Test completed successfully. Results saved to {args.output}")
+            
     except Exception as e:
-        print(f"❌ Error: {e}")
-        logger.exception("Unhandled exception")
+        logger.error(f"Error running job application: {str(e)}")
         sys.exit(1)
 
 if __name__ == "__main__":

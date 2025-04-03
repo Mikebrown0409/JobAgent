@@ -1,18 +1,105 @@
-# JobAgent
+# Enterprise Job Application Agent
 
-An advanced AI-powered job application agent that automatically fills out and submits job applications.
+An AI-powered system for automatically applying to job postings using CrewAI, Playwright, and advanced NLP techniques.
 
-## Overview
+## Project Structure
 
-JobAgent is a state-of-the-art AI agent designed to automate the job application process. It leverages a multi-agent architecture using the CrewAI framework and Google's Gemini API to analyze job postings, extract form structures, map user profile data to application fields, and handle the submission process intelligently.
+```
+enterprise_job_agent/
+├── main.py                 # Entry point and CLI interface
+├── config.py              # Configuration and environment settings
+├── agents/                # AI Agents using CrewAI
+│   ├── __init__.py
+│   ├── profile_adapter_agent.py    # Adapts user profiles to job requirements
+│   ├── form_analyzer_agent.py      # Analyzes form structure and requirements
+│   ├── application_executor_agent.py # Executes form filling operations
+│   ├── session_manager_agent.py    # Manages application session state
+│   └── error_recovery_agent.py     # Handles error recovery
+├── core/                  # Core system components
+│   ├── __init__.py
+│   ├── action_executor.py          # Executes form actions reliably
+│   ├── browser_manager.py          # Manages browser sessions and frames
+│   ├── crew_manager.py             # Orchestrates AI agent interactions
+│   └── diagnostics_manager.py      # Tracks system performance and issues
+└── tools/                 # Specialized tools and utilities
+    ├── __init__.py
+    ├── data_formatter.py          # Formats data for form submission
+    ├── dropdown_matcher.py        # Smart dropdown option matching (70% threshold)
+    ├── element_selector.py        # Enhanced element selection
+    ├── field_identifier.py        # Form field identification
+    └── form_interaction.py        # Form interaction utilities
 
-## Features
+```
 
-- **Automated Form Analysis**: Intelligently analyzes job application forms to identify required fields, form structure, and submission requirements.
-- **Profile Mapping**: Maps user profile data to application fields with high precision.
-- **Test Mode**: Simulates the application process without actually submitting, for testing and verification.
-- **Multi-Agent Architecture**: Uses specialized AI agents for different aspects of the job application process.
-- **Advanced Error Recovery**: Identifies and recovers from common form submission errors.
+## System Workflow
+
+1. **Initialization** (`main.py`):
+   - Loads configuration from `config.py`
+   - Initializes core managers and tools
+   - Sets up logging and diagnostics
+
+2. **Job Application Process**:
+   ```mermaid
+   graph TD
+      A[main.py] --> B[crew_manager.py]
+      B --> C[Session Management]
+      B --> D[Form Analysis]
+      B --> E[Profile Mapping]
+      B --> F[Application Execution]
+      
+      C --> |session_manager_agent.py| G[Manage Session State]
+      D --> |form_analyzer_agent.py| H[Analyze Form Structure]
+      E --> |profile_adapter_agent.py| I[Map Profile to Fields]
+      F --> |application_executor_agent.py| J[Execute Actions]
+      
+      G --> |browser_manager.py| K[Browser Control]
+      H --> |field_identifier.py| L[Identify Fields]
+      I --> |data_formatter.py| M[Format Data]
+      J --> |action_executor.py| N[Execute Form Actions]
+      
+      K --> |element_selector.py| O[Select Elements]
+      L --> |dropdown_matcher.py| P[Match Dropdowns]
+      M --> |form_interaction.py| Q[Form Interactions]
+   ```
+
+3. **Core Components**:
+   - `crew_manager.py`: Orchestrates AI agents and their tasks
+   - `browser_manager.py`: Handles browser automation using Playwright
+   - `action_executor.py`: Executes form actions reliably
+   - `diagnostics_manager.py`: Monitors performance and errors
+
+4. **Specialized Agents**:
+   - `session_manager_agent.py`: Manages application session state and navigation
+   - `application_executor_agent.py`: Executes form filling operations
+   - `profile_adapter_agent.py`: Adapts user profiles to job requirements
+   - `form_analyzer_agent.py`: Analyzes form structure
+   - `error_recovery_agent.py`: Handles error recovery
+
+5. **Tools and Utilities**:
+   - `field_identifier.py`: Identifies form field types and requirements
+   - `dropdown_matcher.py`: Smart matching for dropdown options (70% threshold)
+   - `data_formatter.py`: Formats data for form fields
+   - `form_interaction.py`: Handles form interactions reliably
+   - `element_selector.py`: Enhanced element selection with smart waiting
+
+## Key Features
+
+- Smart form field identification and mapping
+- Reliable dropdown option matching (70% threshold)
+- Session state management and navigation
+- Comprehensive error handling and recovery
+- Detailed diagnostics and logging
+- Frame-aware browser automation
+- Smart waiting and retry mechanisms
+
+## Configuration
+
+Key settings in `config.py`:
+- API credentials and endpoints
+- Browser settings
+- Rate limiting parameters
+- Logging configuration
+- Dropdown matching threshold (70%)
 
 ## Getting Started
 
@@ -25,14 +112,14 @@ JobAgent is a state-of-the-art AI agent designed to automate the job application
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/Mikebrown0409/JobAgent.git
-   cd JobAgent
+   git clone https://github.com/yourusername/enterprise_job_agent.git
+   cd enterprise_job_agent
    ```
 
 2. Create a virtual environment:
    ```bash
-   python -m venv jobagent_venv
-   source jobagent_venv/bin/activate  # On Windows: jobagent_venv\Scripts\activate
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
    ```
 
 3. Install the dependencies:
@@ -45,35 +132,40 @@ JobAgent is a state-of-the-art AI agent designed to automate the job application
    export GEMINI_API_KEY="your_api_key_here"
    ```
 
-### Usage
+### Testing
 
-1. Update your profile in `enterprise_job_agent/test_user/user_profile.json`
+1. Run the integration tests:
+   ```bash
+   pytest enterprise_job_agent/tests/test_workflow_integration.py -v
+   ```
 
 2. Run a test application (will not actually submit):
    ```bash
-   python enterprise_job_agent/test_job_application.py discord --visible
+   python enterprise_job_agent/main.py test --url "https://job-boards.greenhouse.io/discord/jobs/7845336002"
    ```
 
-3. Run with any supported job board:
+### Usage
+
+1. Update your profile in `user_profile.json`:
+   ```json
+   {
+     "name": "Your Name",
+     "education": "Your University",
+     "experience": "Your Experience"
+   }
+   ```
+
+2. Run with any supported job board:
    ```bash
-   python enterprise_job_agent/test_job_application.py [job_type] --visible
+   python enterprise_job_agent/main.py apply --url "JOB_URL" [--test-mode]
    ```
-   Where `job_type` can be discord, google, microsoft, etc. (see config.py for all supported job boards)
 
-## Configuration
+## Success Metrics
 
-You can customize the agent by modifying the following files:
-- `enterprise_job_agent/config.py`: Job URLs and application settings
-- `enterprise_job_agent/test_user/user_profile.json`: Your personal profile data
-
-## Project Structure
-
-- `enterprise_job_agent/`: Main package
-  - `agents/`: Specialized AI agents
-  - `core/`: Core functionality modules
-  - `utils/`: Utility functions and helpers
-  - `test_job_application.py`: Main test script
-  - `main.py`: Core application logic
+- Completion Rate: 90%+ successful test applications
+- Error Recovery: 80%+ recovery from common errors
+- Speed: <2 minutes per form (excluding network delays)
+- Reliability: Smart matching for dropdowns with 70% threshold
 
 ## License
 
