@@ -65,6 +65,3 @@ Thumbs.db
 # Test results and outputs
 enterprise_job_agent/test_results/
 test_results/
-
-# Cursor-specific files
-.cursor/ 
