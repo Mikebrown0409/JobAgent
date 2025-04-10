@@ -3,14 +3,22 @@
 import logging
 import json
 import re
+import asyncio
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 from crewai import Agent
 from langchain_core.language_models import BaseLLM
+from playwright.async_api import Error, Page, Frame, ElementHandle
 
 from enterprise_job_agent.core.diagnostics_manager import DiagnosticsManager
+from enterprise_job_agent.tools.element_selector import ElementSelector
 
 logger = logging.getLogger(__name__)
+
+# Define the new constant near the others
+MAX_HTML_SNIPPET_LENGTH = 500; # Max length for HTML snippets
+MAX_PARENT_HTML_SNIPPET_LENGTH = 1000 # Max length for Parent HTML snippet
+REQUIRED_INDICATOR_REGEX = re.compile(r"(\\*|required|req'd)", re.IGNORECASE) # Regex for common required indicators
 
 @dataclass
 class FormAnalysisResult:
@@ -102,457 +110,826 @@ class FormAnalyzerAgent:
         self,
         browser_manager,
         url: str,
-        visible: bool = False
-    ) -> Dict[str, Any]:
-        """Analyze a form using a browser manager.
-        
-        This is a convenience method that extracts the HTML from the browser
-        and then uses analyze_form_html to analyze it.
-        
-        Args:
-            browser_manager: Browser manager to use
-            url: URL of the page
-            visible: Whether the browser is visible
-            
-        Returns:
-            Analyzed form structure
-        """
-        try:
-            # Get the HTML content from the browser
-            html_content = await browser_manager.get_page_html()
-            
-            # Use analyze_form_html to analyze the form
-            form_structure = self.analyze_form_html(html_content, url)
-            
-            return form_structure
-            
-        except Exception as e:
-            error_msg = f"Form analysis failed: {str(e)}"
-            self.logger.error(error_msg)
-            raise
-    
-    async def analyze_form(
-        self,
-        form_data: Dict[str, Any],
-        page_url: str,
-        job_details: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """
-        Analyze a form structure and create a detailed representation.
-        
-        Args:
-            form_data: Raw form data to analyze
-            page_url: URL of the page containing the form
-            job_details: Optional job posting details for context
-            
-        Returns:
-            Analyzed form structure
-        """
-        try:
-            # Start with basic validation
-            if not form_data or not isinstance(form_data, dict):
-                raise ValueError("Invalid form data provided")
-                
-            # Extract form elements
-            form_elements = form_data.get("form_elements", [])
-            if not form_elements:
-                raise ValueError("No form elements found in form data")
-                
-            # Group fields by purpose
-            field_groups = self._group_fields_by_purpose(form_elements)
-            
-            # Analyze field relationships
-            field_relationships = self._analyze_field_relationships(form_elements)
-            
-            # Determine field importance
-            field_importance = self._determine_field_importance(
-                form_elements,
-                job_details or {}
-            )
-            
-            # Create structured analysis
-            analysis = {
-                "form_structure": {
-                    "url": page_url,
-                    "sections": self._create_form_sections(
-                        field_groups,
-                        field_importance,
-                        field_relationships
-                    ),
-                    "navigation": self._analyze_navigation(form_data),
-                    "validation_rules": self._extract_validation_rules(form_elements)
-                },
-                "field_analysis": {
-                    "total_fields": len(form_elements),
-                    "required_fields": len([f for f in form_elements if f.get("required", False)]),
-                    "field_types": self._count_field_types(form_elements),
-                    "frame_distribution": self._analyze_frame_distribution(form_elements)
-                },
-                "strategic_insights": self._generate_strategic_insights(
-                    form_elements,
-                    field_relationships,
-                    job_details
-                )
-            }
-            
-            return analysis
-            
-        except Exception as e:
-            error_msg = f"Form analysis failed: {str(e)}"
-            logger.error(error_msg)
-            raise
-    
-    def _group_fields_by_purpose(self, form_elements: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
-        """Group form fields by their purpose."""
-        groups = {
-            "personal_info": [],
-            "contact": [],
-            "education": [],
-            "experience": [],
-            "skills": [],
-            "preferences": [],
-            "diversity": [],
-            "other": []
-        }
-        
-        for field in form_elements:
-            # Safely get field attributes, defaulting to empty string if None
-            label = (field.get("label") or "").lower()
-            field_id = (field.get("id") or "").lower()
-            field_name = (field.get("name") or "").lower()
-            
-            # Personal info fields
-            if any(term in label or term in field_id or term in field_name for term in 
-                ["name", "email", "phone", "mobile", "birth"]):
-                groups["personal_info"].append(field)
-                
-            # Contact fields
-            elif any(term in label or term in field_id or term in field_name for term in 
-                ["address", "city", "state", "zip", "postal", "country"]):
-                groups["contact"].append(field)
-                
-            # Education fields
-            elif any(term in label or term in field_id or term in field_name for term in 
-                ["education", "school", "university", "degree", "major", "gpa"]):
-                groups["education"].append(field)
-                
-            # Experience fields
-            elif any(term in label or term in field_id or term in field_name for term in 
-                ["experience", "work", "employment", "job", "company", "role", "position"]):
-                groups["experience"].append(field)
-                
-            # Skills fields
-            elif any(term in label or term in field_id or term in field_name for term in 
-                ["skill", "technology", "programming", "language", "certification"]):
-                groups["skills"].append(field)
-                
-            # Preferences fields
-            elif any(term in label or term in field_id or term in field_name for term in 
-                ["salary", "location", "remote", "travel", "start", "availability"]):
-                groups["preferences"].append(field)
-                
-            # Diversity fields
-            elif any(term in label or term in field_id or term in field_name for term in 
-                ["gender", "race", "ethnicity", "veteran", "disability", "diversity"]):
-                groups["diversity"].append(field)
-                
-            # Other fields
-            else:
-                groups["other"].append(field)
-        
-        return groups
-    
-    def _analyze_field_relationships(self, form_elements: List[Dict[str, Any]]) -> Dict[str, List[str]]:
-        """Analyze relationships between form fields."""
-        relationships = {}
-        
-        for field in form_elements:
-            field_id = field.get("id")
-            if not field_id:
-                continue
-                
-            related_fields = []
-            
-            # Check for common relationships
-            for other_field in form_elements:
-                other_id = other_field.get("id")
-                if not other_id or other_id == field_id:
-                    continue
-                    
-                # Get field names safely
-                field_name = (field.get("name") or "").lower()
-                other_name = (other_field.get("name") or "").lower()
-                
-                # Check if fields are part of the same group (based on prefix)
-                if field_name and other_name:
-                    field_prefix = field_name.split("_")[0] if "_" in field_name else field_name
-                    other_prefix = other_name.split("_")[0] if "_" in other_name else other_name
-                    if field_prefix == other_prefix:
-                        related_fields.append(other_id)
-                    
-                # Get labels safely
-                field_label = (field.get("label") or "").lower()
-                other_label = (other_field.get("label") or "").lower()
-                
-                # Check for dependent fields (e.g., state depends on country)
-                if field_label == "country" and other_label in ["state", "province"]:
-                    related_fields.append(other_id)
-                    
-                # Check for date field relationships
-                if field_name and other_name:
-                    if field_name.endswith("_month") and other_name.endswith("_year"):
-                        related_fields.append(other_id)
-            
-            if related_fields:
-                relationships[field_id] = related_fields
-        
-        return relationships
-    
-    def _determine_field_importance(
-        self,
-        form_elements: List[Dict[str, Any]],
-        job_details: Dict[str, Any]
-    ) -> Dict[str, str]:
-        """Determine importance level for each field."""
-        importance = {}
-        
-        for field in form_elements:
-            field_id = field.get("id")
-            if not field_id:
-                continue
-                
-            # Start with medium importance
-            level = "medium"
-            
-            # Required fields are high importance
-            if field.get("required", False):
-                level = "high"
-                
-            # Get field attributes safely
-            label = (field.get("label") or "").lower()
-            field_name = (field.get("name") or "").lower()
-            field_type = (field.get("type") or "").lower()
-            
-            # High importance fields
-            if any(term in label or term in field_name for term in [
-                "name", "email", "phone", "education", "experience",
-                "resume", "cv", "cover"
-            ]):
-                level = "high"
-                
-            # Medium importance fields
-            elif any(term in label or term in field_name for term in [
-                "address", "skills", "salary", "references"
-            ]):
-                level = "medium"
-                
-            # Low importance fields
-            elif any(term in label or term in field_name for term in [
-                "subscribe", "newsletter", "preference", "optional"
-            ]):
-                level = "low"
-                
-            # File upload fields are typically high importance
-            if field_type == "file":
-                level = "high"
-                
-            importance[field_id] = level
-        
-        return importance
-    
-    def _create_form_sections(
-        self,
-        field_groups: Dict[str, List[Dict[str, Any]]],
-        field_importance: Dict[str, str],
-        field_relationships: Dict[str, List[str]]
+        mapped_frames: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
-        """Create structured form sections."""
-        sections = []
+        """Analyze a form using a browser manager by inspecting the live DOM across frames.
         
-        for group_name, fields in field_groups.items():
-            if not fields:
-                continue
-                
-            section = {
-                "name": group_name,
-                "importance": "high" if any(field_importance.get(f.get("id"), "low") == "high" 
-                    for f in fields) else "medium",
-                "fields": []
-            }
+        Args:
+            browser_manager: Browser manager instance with an active page.
+            url: URL of the page (used for context).
+            mapped_frames: Optional dictionary of frame_id: frame_object from FrameManager.
             
-            for field in fields:
-                field_id = field.get("id")
-                if not field_id:
-                    continue
+        Returns:
+            List of analyzed form elements from all analyzed frames.
+        """
+        if self.diagnostics_manager:
+            self.diagnostics_manager.start_stage("analyze_live_form_across_frames")
+
+        all_form_elements = []
+        analysis_errors = []
+        
+        # Instantiate ElementSelector here
+        element_selector = ElementSelector(browser_manager, self.diagnostics_manager)
+
+        try:
+            if not browser_manager or not browser_manager.page:
+                raise ValueError("BrowserManager or its page is not initialized.")
+            
+            # Use provided mapped frames or default to just the main frame
+            frames_to_analyze = mapped_frames
+            if not frames_to_analyze:
+                 self.logger.warning("No mapped_frames provided, analyzing only main frame.")
+                 main_frame = browser_manager.page.main_frame
+                 if not main_frame:
+                     raise ConnectionError("Could not access the main frame of the page.")
+                 frames_to_analyze = {"main": main_frame} # Default identifier
+
+            self.logger.info(f"Analyzing {len(frames_to_analyze)} frame(s)...")
+
+            # Analyze structure for each frame
+            for frame_id, frame_obj in frames_to_analyze.items():
+                 if not frame_obj: # Skip if frame object is invalid
+                      self.logger.warning(f"Skipping analysis for frame '{frame_id}': Invalid frame object.")
+                      continue
+                 try:
+                     self.logger.debug(f"Analyzing frame: {frame_id} (URL: {frame_obj.url})")
+                     # Pass element_selector to the analysis method
+                     frame_elements = await self.analyze_live_form_structure(frame_obj, frame_id, element_selector)
+                     all_form_elements.extend(frame_elements)
+                     self.logger.debug(f"Found {len(frame_elements)} elements in frame '{frame_id}'")
+                 except Exception as frame_e:
+                      error_msg = f"Failed to analyze frame '{frame_id}': {frame_e}"
+                      self.logger.error(error_msg, exc_info=True)
+                      analysis_errors.append(error_msg)
+                      # Continue analyzing other frames if one fails?
+                      # For now, let's continue
+                      pass 
+            
+            # Combine results - NO! Return only the list to match Task expected_output
+            # analysis_output = {
+            #     "form_elements": all_form_elements,
+            #     "url": url, # Keep URL for context
+            #     "analysis_type": "live_multi_frame",
+            #     "frames_analyzed": list(frames_to_analyze.keys()),
+            #     "errors": analysis_errors
+            # }
+            
+            if self.diagnostics_manager:
+                # Log details before returning just the list
+                self.diagnostics_manager.end_stage(
+                    stage_name="analyze_live_form_across_frames", # Use the correct stage name
+                    success=not analysis_errors, 
+                    error="; ".join(analysis_errors) or None, 
+                    details={"total_elements_found": len(all_form_elements), "frames_analyzed": len(frames_to_analyze)}
+                 )
+            
+            # Return ONLY the list of elements
+            return all_form_elements
+            
+        except Exception as e:
+            error_msg = f"Live multi-frame analysis failed for {url}: {str(e)}"
+            self.logger.error(error_msg, exc_info=True)
+            if self.diagnostics_manager:
+                self.diagnostics_manager.end_stage(False, error=error_msg)
+            raise
+    
+    async def analyze_live_form_structure(self, frame: Any, frame_id: str, element_selector: ElementSelector) -> List[Dict[str, Any]]:
+         """Analyzes the structure of a form within a given Playwright frame.
+         
+         Args:
+             frame: The Playwright Frame object to analyze.
+             frame_id: The identifier assigned to this frame by FrameManager.
+             element_selector: The ElementSelector instance for this frame
+             
+         Returns:
+             A list of dictionaries, each representing a found form element.
+         """
+         self.logger.info(f"Starting live analysis of frame '{frame_id}' (URL: {frame.url})")
+         form_elements = []
+
+         # Enhanced selectors for better field detection
+         field_selectors = "input, select, textarea, [role='combobox'], [role='listbox'], [role='textbox'], [contenteditable='true'], .form-control, .input-field, .react-select"
+         button_selectors = "button, input[type='submit'], input[type='button'], [role='button'], a.btn, a.button, .btn, .button, [aria-label*='submit'], [aria-label*='apply']"
+         container_selectors = "form, [role='form'], .form, .form-group, fieldset, .field-container, .input-container, .form-section"
+         required_attr_selectors = "[required], [aria-required='true'], .required, .mandatory"
+
+         try:
+             # --- First, identify form containers to help with context ---
+             container_locators = frame.locator(container_selectors)
+             container_count = await container_locators.count()
+             self.logger.debug(f"Found {container_count} potential form containers")
+             
+             # --- Identify all required fields first with attribute-based detection ---
+             required_field_map = {}
+             required_locators = frame.locator(required_attr_selectors)
+             required_count = await required_locators.count()
+             self.logger.debug(f"Found {required_count} elements with explicit required attributes")
+             
+             for i in range(required_count):
+                 try:
+                     element_handle = await required_locators.nth(i).element_handle()
+                     if not element_handle: continue
+                     
+                     element_id = await element_handle.get_attribute("id") or ""
+                     element_name = await element_handle.get_attribute("name") or ""
+                     
+                     # Store in map for later reference
+                     key = f"{element_id or ''}_{element_name or ''}".strip("_")
+                     if key:
+                         required_field_map[key] = True
+                         self.logger.debug(f"Marked field as required by attribute: {key}")
+                 except Exception as e:
+                     self.logger.debug(f"Error processing required field: {e}")
+
+             # --- Analyze Form Fields --- 
+             field_locators = frame.locator(field_selectors)
+             count = await field_locators.count()
+             self.logger.debug(f"Found {count} potential form fields using enhanced selectors")
+
+             for i in range(count):
+                 try:
+                     element_handle = await field_locators.nth(i).element_handle()
+                     if not element_handle: continue
+
+                     # Extract basic element data
+                     element_data = await self._extract_element_data(frame, element_handle, "field", frame_id, element_selector)
+                     if not element_data: continue
+                     
+                     # Enhanced required field detection
+                     element_id = element_data.get("element_id", "")
+                     name = element_data.get("name", "")
+                     label_text = element_data.get("label_text", "").lower()
+                     
+                     # Check if this field was already marked as required by attribute
+                     key = f"{element_id or ''}_{name or ''}".strip("_")
+                     
+                     # Additional required field detection logic
+                     if not element_data.get("required", False):
+                         # Check the map from previous required attribute scan
+                         if key and key in required_field_map:
+                            element_data["required"] = True
+                            element_data["required_reason"] = "Attribute map"
+                            self.logger.debug(f"Field {element_data['selector']} marked required via attribute map.")
+                         # Check label text for common required markers (asterisk, "(required)")
+                         elif any(marker in label_text for marker in ["*", "(required)"]):
+                             # Avoid marking purely informational fields like headers if they accidentally match
+                             if element_data.get("field_type") not in ["label", "heading", "unknown"]:
+                                element_data["required"] = True
+                                element_data["required_reason"] = "Label text"
+                                self.logger.debug(f"Field {element_data['selector']} marked required via label text.")
+
+                     form_elements.append(element_data)
+                 except Error as playwright_error:
+                     # Catch Playwright-specific errors (e.g., element detached)
+                     self.logger.warning(f"Playwright error processing field {i}: {playwright_error}")
+                 except Exception as e:
+                     self.logger.error(f"Error processing form field {i}: {e}", exc_info=True)
+                     # Optionally append error information to the element data or a separate error list
+
+             # --- Analyze Buttons --- 
+             button_locators = frame.locator(button_selectors)
+             btn_count = await button_locators.count()
+             self.logger.debug(f"Found {btn_count} potential buttons")
+
+             for i in range(btn_count):
+                 try:
+                     element_handle = await button_locators.nth(i).element_handle()
+                     if not element_handle: continue
+
+                     element_data = await self._extract_element_data(frame, element_handle, "button", frame_id, element_selector)
+                     if element_data:
+                         # Prioritize submit/apply buttons
+                         button_text = element_data.get("text_content", "").lower()
+                         if any(action in button_text for action in ["submit", "apply", "continue", "next"]):
+                             element_data["is_submit"] = True
+                         form_elements.append(element_data)
+                 except Error as playwright_error:
+                     self.logger.warning(f"Playwright error processing button {i}: {playwright_error}")
+                 except Exception as e:
+                     self.logger.error(f"Error processing button {i}: {e}", exc_info=True)
+
+         except Error as playwright_error:
+             self.logger.error(f"Playwright error during live analysis of frame '{frame_id}': {playwright_error}")
+             raise # Re-raise Playwright errors
+         except Exception as e:
+             self.logger.error(f"Unexpected error during live analysis of frame '{frame_id}': {e}", exc_info=True)
+             # Consider whether to raise or return partial results
+             # For now, return what we have, errors should be logged in analyze_form_with_browser
+             pass 
+
+         self.logger.info(f"Finished live analysis of frame '{frame_id}', found {len(form_elements)} elements.")
+         return form_elements
+
+    async def _extract_element_data(self, frame: Any, element_handle: Any, element_category: str, frame_id: str, element_selector: ElementSelector) -> Optional[Dict[str, Any]]:
+         """Extracts detailed data about a single form element handle.
+         Now includes widget_type classification.
+         """
+         element_info = None # Initialize to ensure it's defined
+         try:
+             log_prefix = "ELEM_DATA_LOG: "
+             dbg_id = await element_handle.get_attribute("id") or "[no id]"
+             dbg_tag = await element_handle.evaluate("el => el.tagName.toLowerCase()") or "unknown"
+             self.logger.debug(f"{log_prefix}Starting extraction for {dbg_tag}#{dbg_id}")
+
+             tag_name = (await element_handle.evaluate("el => el.tagName.toLowerCase()")) or "unknown"
+             element_id = await element_handle.get_attribute("id")
+             name = await element_handle.get_attribute("name")
+             placeholder = await element_handle.get_attribute("placeholder")
+             element_type = await element_handle.get_attribute("type") if tag_name == "input" else None
+             role = await element_handle.get_attribute("role")
+             class_name = await element_handle.get_attribute("class") or ""
+             
+             self.logger.debug(f"{log_prefix}Element {dbg_tag}#{dbg_id} attributes: tag={tag_name}, role='{role}', type='{element_type}', class='{class_name[:50]}...'") # Log key attributes
+
+             is_visible = await element_handle.is_visible()
+             is_enabled = await element_handle.is_enabled()
+             text_content = (await element_handle.text_content() or "").strip()
+             outer_html_snippet = await element_handle.evaluate("el => el.outerHTML.substring(0, 500)") # Snippet for context
+             
+             # Basic required check (more comprehensive check done in analyze_live_form_structure)
+             required = await element_handle.evaluate("el => el.required || el.getAttribute('aria-required') === 'true'")
+             
+             # --- Generate Stable Selector --- 
+             selector = None
+             if element_category == "button" and await element_handle.evaluate("el => el.getAttribute('type') === 'submit'"):
+                 # Prioritize [type="submit"] for submit buttons, potentially with text
+                 text = (await element_handle.text_content() or "").strip()
+                 if text:
+                     # Use element_selector for escaping
+                     selector = f"button[type='submit']:has-text('{element_selector._escape_css_string(text)}')"
+                 else:
+                     selector = "button[type='submit']" # Fallback if no text
+                 self.logger.debug(f"Generated submit button selector: {selector}")
+
+             if not selector:
+                 # Use the dedicated tool to generate the best possible selector
+                 selector = await element_selector.generate_stable_selector(element_handle, frame)
+             
+             # Fallback selector generation (absolute last resort if tool fails or selector still missing)
+             if not selector:
+                 self.logger.warning(f"ElementSelector tool failed to generate a stable selector for element {tag_name}#{element_id}. Falling back to basic tag name.")
+                 selector = tag_name # Use tag name as the ultimate fallback
+                 
+             # --- Field Type and Widget Type Classification --- 
+             field_type = "unknown"
+             widget_type = "unknown" # NEW FIELD
+             options = []
+             
+             classification_path = [] # Track how widget_type is set
+
+             if element_category == "button":
+                 field_type = "button"
+                 widget_type = "button"
+                 classification_path.append("category=button")
+             elif tag_name == "select":
+                 field_type = "select"
+                 widget_type = "standard_select"
+                 classification_path.append("tag=select")
+                 # Extract options from standard select
+                 option_elements = await element_handle.query_selector_all("option")
+                 options = []
+                 for opt in option_elements:
+                     value = await opt.get_attribute("value")
+                     text = (await opt.text_content() or "").strip()
+                     # Exclude placeholder/disabled options if they have no value and empty text
+                     disabled = await opt.is_disabled()
+                     if (value or text) and not disabled:
+                         options.append({"value": value, "text": text})
+             elif tag_name == "textarea":
+                 field_type = "textarea"
+                 widget_type = "text_area" # Consistent naming convention?
+                 classification_path.append("tag=textarea")
+             elif tag_name == "input":
+                 input_type = element_type.lower() if element_type else "text"
+                 field_type = input_type # Default field_type to input type
+                 classification_path.append(f"tag=input, type={input_type}")
+                 
+                 if input_type == "text":
+                      widget_type = "text_input"
+                 elif input_type == "email":
+                      widget_type = "email_input"
+                 elif input_type == "password":
+                      widget_type = "password_input"
+                 elif input_type == "number":
+                      widget_type = "number_input"
+                 elif input_type == "tel":
+                      widget_type = "tel_input"
+                 elif input_type == "url":
+                      widget_type = "url_input"
+                 elif input_type == "date":
+                      widget_type = "date_input"
+                 elif input_type == "checkbox":
+                      field_type = "checkbox" # More specific field_type
+                      widget_type = "checkbox"
+                 elif input_type == "radio":
+                      field_type = "radio" # More specific field_type
+                      widget_type = "radio_button"
+                 elif input_type == "file":
+                      field_type = "file" # More specific field_type
+                      widget_type = "file_input"
+                 elif input_type == "submit" or input_type == "button" or input_type == "reset":
+                      field_type = "button"
+                      widget_type = "button_input" # Input button
+                 else:
+                      widget_type = "text_input" # Fallback for other input types like search, etc.
+                 
+                 # Refine for autocomplete/typeahead based on role or attributes
+                 if role == "combobox" or "autocomplete" in class_name.lower():
+                     classification_path.append(f"input refined by role/class -> autocomplete")
+                     widget_type = "autocomplete"
+                     # Try scraping options if it looks like autocomplete
+                     try:
+                         options = await self._scrape_dynamic_options(frame, element_handle, element_selector)
+                     except Exception as scrape_ex:
+                         self.logger.debug(f"Could not scrape options for potential autocomplete {selector}: {scrape_ex}")
+
+             elif role == "combobox" or role == "listbox":
+                 field_type = "select" # Treat these roles as selects for field_type purpose
+                 widget_type = "custom_select"
+                 classification_path.append(f"role={role} -> custom_select")
+                 try:
+                     options = await self._scrape_dynamic_options(frame, element_handle, element_selector)
+                 except Exception as scrape_ex:
+                      self.logger.debug(f"Could not scrape options for custom select {selector}: {scrape_ex}")
+             elif "select" in class_name.lower() or "dropdown" in class_name.lower():
+                 # Heuristic: if class contains 'select' or 'dropdown', treat as custom select
+                 if tag_name != 'label': # Avoid misclassifying labels
+                     classification_path.append(f"class heuristic -> custom_select")
+                     field_type = "select"
+                     widget_type = "custom_select"
+                     try:
+                         options = await self._scrape_dynamic_options(frame, element_handle, element_selector)
+                     except Exception as scrape_ex:
+                         self.logger.debug(f"Could not scrape options for potential custom select {selector}: {scrape_ex}")
+             elif await element_handle.evaluate("el => el.getAttribute('contenteditable') === 'true'"): 
+                 field_type = "textarea" # Treat contenteditable like textarea
+                 widget_type = "rich_text_editor" # Or content_editable?
+                 classification_path.append("contenteditable -> rich_text_editor")
+
+             # --- Label Extraction --- 
+             label_text = ""
+             aria_label = await element_handle.get_attribute("aria-label")
+             aria_labelledby = await element_handle.get_attribute("aria-labelledby")
+
+             if aria_label:
+                 label_text = aria_label
+             elif aria_labelledby:
+                 try:
+                     label_element = await frame.query_selector(f"#{aria_labelledby}")
+                     if label_element:
+                         label_text = (await label_element.text_content() or "").strip()
+                 except Exception as e:
+                     self.logger.debug(f"Error finding label by aria-labelledby '{aria_labelledby}': {e}")
+             
+             # If no ARIA label, try standard label finding logic (JS evaluation)
+             if not label_text:
+                 try:
+                     label_text = await element_handle.evaluate("""el => {
+                         // Find associated label element
+                         const findAssociatedLabel = (element) => {
+                             if (!element) return null;
+                             // 1. Check aria-label / aria-labelledby (already checked above, but good fallback)
+                             const ariaLabel = element.getAttribute('aria-label');
+                             if (ariaLabel) return ariaLabel.trim();
+                             const labelledby = element.getAttribute('aria-labelledby');
+                             if (labelledby) {
+                                 const labelEl = document.getElementById(labelledby);
+                                 if (labelEl) return labelEl.textContent?.trim() || null;
+                             }
+                             // 2. Check for <label for="...">
+                             if (element.id) {
+                                 const label = document.querySelector(`label[for="${element.id}"]`);
+                                 if (label) return label.textContent?.trim() || null;
+                             }
+                             // 3. Check parent <label>
+                             let parent = element.parentElement;
+                             while (parent) {
+                                 if (parent.tagName === 'LABEL') {
+                                      // Get text content, excluding the input element's own text/value
+                                      let labelClone = parent.cloneNode(true);
+                                      let inputClone = labelClone.querySelector(element.tagName);
+                                      if (inputClone) labelClone.removeChild(inputClone);
+                                      return labelClone.textContent?.trim() || null;
+                                 }
+                                 // Stop if we hit the body or another form element container
+                                 if (parent.tagName === 'BODY' || parent.closest('form, div.form-group, fieldset')) break; 
+                                 parent = parent.parentElement;
+                             }
+                             // 4. Check sibling label or span immediately before/after
+                             const prevSibling = element.previousElementSibling;
+                             if (prevSibling && (prevSibling.tagName === 'LABEL' || prevSibling.tagName === 'SPAN')) {
+                                 return prevSibling.textContent?.trim() || null;
+                             }
+                             const nextSibling = element.nextElementSibling;
+                             if (nextSibling && nextSibling.tagName === 'LABEL') { // Less common
+                                 return nextSibling.textContent?.trim() || null;
+                             }
+                             // 5. Check placeholder attribute (checked below in Python)
+                             // 6. Check title attribute (checked below in Python)
+                             return null;
+                         };
+                         return findAssociatedLabel(el);
+                     }""")
+                     label_text = (label_text or "").strip()
+                 except Exception as e:
+                     self.logger.debug(f"Error running JS label finder for {selector}: {e}")
+             
+             # Fallbacks for label
+             if not label_text:
+                 label_text = placeholder or ""
+             if not label_text:
+                  label_text = await element_handle.get_attribute("title") or ""
+             if not label_text:
+                 # Use name as last resort, converting camel/snake case
+                  label_text = name or ""
+                  label_text = re.sub(r'(?<!^)(?=[A-Z])', ' ', label_text).title() # Camel case
+                  label_text = label_text.replace('_', ' ').replace('-', ' ').title() # Snake/kebab case
+                 
+             label_text = label_text.strip()
+
+             # --- Filter out likely internal/non-interactive elements ---
+             if await element_handle.evaluate("el => el.getAttribute('aria-hidden') === 'true'"):
+                 self.logger.debug(f"{log_prefix}Skipping element {dbg_tag}#{dbg_id} (selector: {selector}) because aria-hidden is true.")
+                 return None
+             if await element_handle.evaluate("el => el.getAttribute('tabindex') === '-1'"):
+                 # Also consider skipping tabindex=-1 unless it's a known interactive role
+                 if role not in ["combobox", "listbox", "textbox"] and tag_name not in ["input", "select", "textarea", "button"]:
+                    self.logger.debug(f"{log_prefix}Skipping element {dbg_tag}#{dbg_id} (selector: {selector}) because tabindex is -1 and role/tag is not interactive.")
+                    return None
+             # --- End Filtering ---
+
+             # <<< START EXTRACTION OF PARENT HTML >>>
+             parent_html_snippet: Optional[str] = None
+             try:
+                 # Use a JS function within evaluate to get the parent's outerHTML
+                 parent_html_snippet = await element_handle.evaluate(
+                     """(el, maxLength) => {
+                         if (el.parentElement) {
+                             // Limit length to avoid excessive data
+                             return el.parentElement.outerHTML.substring(0, maxLength);
+                         }
+                         return null; // Return null for Python compatibility
+                     }""",
+                     MAX_PARENT_HTML_SNIPPET_LENGTH # Pass maxLength as argument
+                 )
+                 # Evaluate might return None directly if the JS returns null
+                 if parent_html_snippet is None:
+                     parent_html_snippet = None # Explicitly keep it None
+             except Exception as parentHtmlError:
+                  # Check if message exists before checking 'target closed'
+                  msg = getattr(parentHtmlError, 'message', '')
+                  if msg and 'target closed' not in msg: # Avoid spamming "target closed" errors
+                      self.logger.warning(f"{log_prefix}Could not get parent HTML for {selector}: {parentHtmlError}")
+                  parent_html_snippet = None # Ensure it's None on error
+             # <<< END EXTRACTION OF PARENT HTML >>>
+
+             element_info = {
+                 "frame_id": frame_id,
+                 "selector": selector, # Best guess selector
+                 "element_id": element_id,
+                 "name": name,
+                 "tag_name": tag_name,
+                 "field_type": field_type, 
+                 "widget_type": widget_type, # Added widget type
+                 "role": role,
+                 "label_text": label_text,
+                 "placeholder": placeholder,
+                 "text_content": text_content if element_category == 'button' else None, # Only for buttons usually
+                 "options": options if options else None, # Only include if options were found
+                 "required": bool(required),
+                 "required_reason": "Attribute" if required else None,
+                 "is_visible": is_visible,
+                 "is_enabled": is_enabled,
+                 # Use element_selector for getting ARIA attributes
+                 "aria_attributes": await element_selector._get_relevant_aria_attributes(element_handle),
+                 "html_snippet": outer_html_snippet,
+                 "parent_html_snippet": parent_html_snippet, # Add the new field here
+             }
+
+             self.logger.debug(f"{log_prefix}Final classification for {dbg_tag}#{dbg_id}: widget_type='{widget_type}', field_type='{field_type}' (Path: {classification_path})")
+
+             return element_info
+
+         except Error as playwright_error:
+             # <<< START MODIFICATION >>>
+             # Try to get some identifier even if basic attributes failed
+             err_id = "[unknown_id_due_to_error]"
+             try: err_id = await element_handle.get_attribute('id') or "[no id]"
+             except: pass
+             self.logger.error(f"{log_prefix}Playwright Error extracting data for element handle ID='{err_id}': {playwright_error}")
+             # <<< END MODIFICATION >>>
+             return None # Return None if extraction fails for an element
+         except Exception as e:
+             # <<< START MODIFICATION >>>
+             err_id = "[unknown_id_due_to_error]"
+             try: err_id = await element_handle.get_attribute('id') or "[no id]"
+             except: pass
+             self.logger.error(f"{log_prefix}Unexpected Error extracting data for element handle ID='{err_id}': {e}", exc_info=True)
+             # <<< END MODIFICATION >>>
+             return None # Return None if extraction fails for an element
+
+    async def _scrape_dynamic_options(self, frame: Any, element_handle: Any, element_selector: ElementSelector) -> List[Dict[str, Any]]:
+        """Attempts to scrape options associated with a custom dropdown/combobox/autocomplete.
+        This might involve clicking the element and waiting for options to appear.
+        Args:
+            frame: The Playwright Frame containing the element.
+            element_handle: The Playwright ElementHandle for the input/trigger element.
+            element_selector: The ElementSelector instance for this frame
+
+        Returns:
+            A list of option dictionaries [{'value': ..., 'text': ...}] or an empty list.
+        """ 
+        options = []
+        # Common selectors for dropdown options that appear after interaction
+        option_selectors = [
+            "li[role='option']", 
+            "div[role='option']", 
+            ".dropdown-item", 
+            ".select-option", 
+            ".autocomplete-suggestion",
+            ".list-group-item",
+            "ul[role='listbox'] > li", # Options within a listbox container
+            "div[role='listbox'] > div[role='option']",
+             # Add more specific selectors based on common libraries if needed
+             # e.g., for React-Select: '.react-select__option'
+        ]
+        
+        associated_list_selector = None
+        try:
+            # 1. Check ARIA attributes pointing to the list container
+            aria_controls = await element_handle.get_attribute("aria-controls")
+            aria_owns = await element_handle.get_attribute("aria-owns")
+            list_id = aria_controls or aria_owns
+            
+            # Determine if this is the target field for enhanced logging
+            target_element_id = await element_handle.get_attribute("id")
+            is_target_field = target_element_id == "degree--0" # Simple check for now
+            if is_target_field:
+                self.logger.debug(f"DEGREE_FIELD_LOG: Starting _scrape_dynamic_options for target element {target_element_id}")
+
+            if list_id:
+                associated_list_selector = f"#{list_id}"
+                if is_target_field:
+                    self.logger.debug(f"DEGREE_FIELD_LOG: Found potential associated list via ARIA: {associated_list_selector}")
+                else:
+                    self.logger.debug(f"Found potential associated list via ARIA: {associated_list_selector}")
+            else:
+                # 2. Heuristic: Look for a nearby sibling/parent ul/div with role=listbox
+                nearby_list_js = """el => {
+                    let sibling = el.nextElementSibling;
+                    if (sibling && sibling.getAttribute('role') === 'listbox') return '#' + sibling.id; // Prefer ID
+                    if (sibling && sibling.querySelector('[role=\"listbox\"]')) return '#' + sibling.querySelector('[role=\"listbox\"]').id;
+                    let parent = el.parentElement;
+                    while (parent && parent.tagName !== 'BODY') {
+                        const listbox = parent.querySelector('[role=\"listbox\"]');
+                        if (listbox) return '#' + listbox.id; // Prefer ID
+                        if (parent.getAttribute('role') === 'listbox') return '#' + parent.id;
+                        parent = parent.parentElement;
+                    }
+                    return null;
+                }"""
+                try:
+                    list_id_from_nearby = await element_handle.evaluate(nearby_list_js)
+                    if list_id_from_nearby and list_id_from_nearby.startswith('#'):
+                         associated_list_selector = list_id_from_nearby
+                         if is_target_field:
+                             self.logger.debug(f"DEGREE_FIELD_LOG: Found potential associated list via nearby heuristic: {associated_list_selector}")
+                         else:
+                            self.logger.debug(f"Found potential associated list via nearby heuristic: {associated_list_selector}")
+                except Exception as js_err:
+                     self.logger.debug(f"JS error looking for nearby listbox: {js_err}")
+
+            # First check if options are already visible without clicking (non-intrusive)
+            visible_without_click = False
+            all_scraped_options = set()
+            options_from_static = 0
+            
+            # Try to find options that are already visible without interaction
+            for opt_selector in option_selectors:
+                try:
+                    option_locators = frame.locator(opt_selector)
+                    opt_count = await option_locators.count()
                     
-                field_info = {
-                    "id": field_id,
-                    "label": field.get("label", ""),
-                    "type": field.get("type", "text"),
-                    "purpose": group_name,
-                    "importance": field_importance.get(field_id, "medium"),
-                    "required": field.get("required", False),
-                    "validation": field.get("validation", ""),
-                    "dependencies": field_relationships.get(field_id, []),
-                    "selector_strategies": self._generate_selector_strategies(field)
-                }
+                    if opt_count > 0:
+                        visible_options = 0
+                        # Sample a few to see if any are visible
+                        for i in range(min(opt_count, 3)):
+                            opt_handle = await option_locators.nth(i).element_handle()
+                            if opt_handle and await opt_handle.is_visible():
+                                visible_options += 1
+                        
+                        if visible_options > 0:
+                            self.logger.debug(f"Found {visible_options} already-visible options with selector {opt_selector} without clicking")
+                            visible_without_click = True
+                            
+                            # Extract these already visible options
+                            for i in range(min(opt_count, 50)):  # Limit to 50 per selector
+                                opt_handle = await option_locators.nth(i).element_handle()
+                                if not opt_handle or not await opt_handle.is_visible(): 
+                                    continue
+                                
+                                value = await opt_handle.get_attribute("data-value")
+                                text = (await opt_handle.text_content() or "").strip()
+                                if text:
+                                    normalized_text = text.lower()
+                                    original_value = value.strip() if value else text
+                                    all_scraped_options.add((normalized_text, original_value))
+                                    options_from_static += 1
+                except Exception:
+                    continue
+            
+            if options_from_static > 0:
+                self.logger.info(f"Found {options_from_static} options without clicking. Skipping intrusive dropdown interaction.")
+            
+            # Only proceed with clicking if we haven't found options yet
+            if not visible_without_click and options_from_static == 0:
+                # Trigger the dropdown/autocomplete (use click for robustness)
+                # Use a short timeout as the list might appear instantly or already be present
+                click_successful = False
+                for attempt in range(2): # Try clicking twice
+                    try:
+                        self.logger.debug(f"Attempt {attempt+1}/2: Trying to trigger dropdown/autocomplete for {await element_handle.get_attribute('id') or 'element'}")
+                        await element_handle.click(timeout=1500) 
+                        await asyncio.sleep(0.3) # Short wait for dynamic content
+                        click_successful = True
+                        self.logger.debug(f"Click attempt {attempt+1} successful.")
+                        break # Exit loop on success
+                    except Exception as click_err:
+                        error_str = str(click_err)
+                        if "timeout" in error_str.lower() or "intercept" in error_str.lower() or "stable" in error_str.lower():
+                            if attempt == 0:
+                                self.logger.warning(f"Click attempt {attempt+1} failed ({click_err}), retrying after delay...")
+                                await asyncio.sleep(0.3) # Delay before retry
+                            else:
+                                self.logger.warning(f"Click attempt {attempt+1} failed ({click_err}) after retry. Proceeding without confirmed click.")
+                        else:
+                             # Log other click errors but don't necessarily retry unless it's a timeout/stability issue
+                             self.logger.debug(f"Could not click element to trigger options (may not be needed): {click_err}")
+                             break # Don't retry for non-timeout/stability errors
+
+                # Define the scope for searching options
+                search_scope = frame
+                if associated_list_selector:
+                     try:
+                          list_locator = frame.locator(associated_list_selector).first
+                          await list_locator.wait_for(state='visible', timeout=1000) # Wait briefly for list container
+                          search_scope = list_locator # Search within the identified container
+                          if is_target_field:
+                              self.logger.debug(f"DEGREE_FIELD_LOG: Searching for options within specific scope: {associated_list_selector}")
+                          else:
+                            self.logger.debug(f"Searching for options within scope: {associated_list_selector}")
+                     except Exception:
+                          if is_target_field:
+                              self.logger.debug(f"DEGREE_FIELD_LOG: Associated list container {associated_list_selector} not found/visible. Searching globally.")
+                          else:
+                            self.logger.debug(f"Associated list container {associated_list_selector} not found or visible. Searching globally in frame.")
+                          search_scope = frame # Fallback to frame
+                else:
+                     if is_target_field:
+                         self.logger.debug("DEGREE_FIELD_LOG: No specific list container identified. Searching globally in frame.")
+                     else:
+                        self.logger.debug("No specific list container identified. Searching globally in frame.")
+
+                # Try each common option selector within the determined scope
+                # Consolidate options from ALL selectors
+                max_total_options = 100 # Limit total options scraped across all selectors
                 
-                section["fields"].append(field_info)
-            
-            sections.append(section)
-        
-        return sections
-    
-    def _analyze_navigation(self, form_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze form navigation structure."""
-        navigation = {
-            "multi_page": False,
-            "navigation_elements": []
-        }
-        
-        # Check for navigation elements
-        form_elements = form_data.get("form_elements", [])
-        for element in form_elements:
-            # Get element attributes safely
-            element_type = (element.get("type") or "").lower()
-            element_label = (element.get("label") or "").lower()
-            element_name = (element.get("name") or "").lower()
-            element_selector = element.get("selector", "")
-            
-            # Check for submit buttons
-            if element_type == "submit":
-                navigation["navigation_elements"].append({
-                    "label": element.get("label") or "Submit",
-                    "purpose": "submit",
-                    "selector": element_selector
-                })
-            # Check for navigation buttons
-            elif any(term in element_label or term in element_name for term in ["next", "continue", "previous", "back"]):
-                navigation["multi_page"] = True
-                navigation["navigation_elements"].append({
-                    "label": element.get("label", ""),
-                    "purpose": "next" if "next" in element_label or "continue" in element_label else "previous",
-                    "selector": element_selector
-                })
-        
-        return navigation
-    
-    def _extract_validation_rules(self, form_elements: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Extract validation rules for form fields."""
-        validation_rules = {}
-        
-        for field in form_elements:
-            field_id = field.get("id")
-            if not field_id:
-                continue
+                for opt_selector in option_selectors:
+                    if len(all_scraped_options) >= max_total_options:
+                         self.logger.debug(f"Reached max option limit ({max_total_options}), stopping selector checks.")
+                         break # Stop if we hit the overall limit
+
+                    try:
+                        option_locators = search_scope.locator(opt_selector)
+                        opt_count = await option_locators.count()
+
+                        if opt_count > 0:
+                            self.logger.debug(f"Found {opt_count} options using selector '{opt_selector}' within scope.")
+                            # Limit options scraped per selector to avoid excessive time on one bad selector
+                            scrape_limit = min(opt_count, 50) 
+                            
+                            if is_target_field:
+                                self.logger.debug(f"DEGREE_FIELD_LOG: Trying selector '{opt_selector}'. Found {opt_count} raw elements (limit {scrape_limit}).")
+
+                            options_from_this_selector = 0
+                            for i in range(scrape_limit):
+                                if len(all_scraped_options) >= max_total_options: break # Check limit within inner loop too
+
+                                opt_handle = await option_locators.nth(i).element_handle()
+                                if not opt_handle: continue
+                                if not await opt_handle.is_visible(): continue # Ensure options are visible
+
+                                # Extract value and text - adapt based on element structure
+                                # Common patterns: data-value attribute, or just text content
+                                value = await opt_handle.get_attribute("data-value")
+                                text = (await opt_handle.text_content() or "").strip()
+                                aria_label = await opt_handle.get_attribute("aria-label")
+                                
+                                # Refine text/value extraction
+                                if not text and aria_label: # Use aria-label if text is empty
+                                    text = aria_label.strip()
+                                
+                                # Normalize and store if text is valid
+                                normalized_text = text.lower() # Store normalized text
+                                if normalized_text:
+                                    # Store tuple (normalized_text, original_value_or_text)
+                                    # Use original text as value if no specific value attribute found
+                                    original_value = value.strip() if value else text 
+                                    all_scraped_options.add((normalized_text, original_value)) 
+                                    options_from_this_selector += 1
+                           
+                            if options_from_this_selector > 0:
+                                if is_target_field:
+                                    self.logger.debug(f"DEGREE_FIELD_LOG: Added {options_from_this_selector} unique options from '{opt_selector}'. Total unique now: {len(all_scraped_options)}")
+                                else:
+                                    self.logger.debug(f"Added {options_from_this_selector} unique options from selector '{opt_selector}'. Total unique: {len(all_scraped_options)}")
+                           
+                    except Exception as e:
+                        if is_target_field:
+                            self.logger.debug(f"DEGREE_FIELD_LOG: Error checking option selector '{opt_selector}': {e}")
+                        else:
+                            self.logger.debug(f"Error checking option selector '{opt_selector}': {e}")
+                        continue # Try next selector
+
+                # Enhanced dropdown dismissal with multiple strategies and verification
+                dismiss_successful = False
                 
-            rules = {
-                "required": field.get("required", False),
-                "type": field.get("type", "text"),
-                "pattern": field.get("pattern", ""),
-                "min_length": field.get("minlength"),
-                "max_length": field.get("maxlength")
-            }
-            
-            # Add field-specific validation
-            field_type = field.get("type", "").lower()
-            if field_type == "email":
-                rules["format"] = "email"
-            elif field_type == "tel":
-                rules["format"] = "phone"
-            elif field_type == "url":
-                rules["format"] = "url"
+                # Strategy 1: Click body (but with better timeout)
+                try:
+                    await frame.locator('body').click(timeout=1000)
+                    await asyncio.sleep(0.3)  # Slightly longer wait
+                    dismiss_successful = True
+                    self.logger.debug("Dismissed dropdown with body click")
+                except Exception as e:
+                    self.logger.debug(f"Body click dismissal failed: {e}")
                 
-            validation_rules[field_id] = rules
+                # Strategy 2: Press Escape key on body if first method failed
+                if not dismiss_successful:
+                    try:
+                        await frame.press('body', 'Escape', timeout=1000)
+                        await asyncio.sleep(0.3)
+                        dismiss_successful = True
+                        self.logger.debug("Dismissed dropdown with Escape key")
+                    except Exception as e:
+                        self.logger.debug(f"Escape key dismissal failed: {e}")
+                
+                # Strategy 3: Use JavaScript to click away or explicitly close dropdowns
+                if not dismiss_successful:
+                    try:
+                        await frame.evaluate("""() => {
+                            // Click the document body
+                            document.body.click();
+                            
+                            // Also try to close any visible dropdowns/menus by attribute
+                            const dropdowns = document.querySelectorAll('[aria-expanded="true"], [class*="open"], [class*="active"]');
+                            for (const dropdown of dropdowns) {
+                                dropdown.setAttribute('aria-expanded', 'false');
+                                dropdown.classList.remove('open');
+                                dropdown.classList.remove('active');
+                            }
+                        }""")
+                        await asyncio.sleep(0.3)
+                        self.logger.debug("Attempted dropdown dismissal with JavaScript")
+                    except Exception as e:
+                        self.logger.debug(f"JavaScript dismissal failed: {e}")
+
+                # Verify dismissal by checking if dropdown options are still visible
+                try:
+                    visible_options = False
+                    for opt_selector in option_selectors:
+                        try:
+                            option_locators = frame.locator(opt_selector)
+                            opt_count = await option_locators.count()
+                            if opt_count > 0:
+                                opt_handle = await option_locators.nth(0).element_handle()
+                                if opt_handle and await opt_handle.is_visible():
+                                    visible_options = True
+                                    break
+                        except:
+                            continue
+                    
+                    if visible_options:
+                        self.logger.warning("Dropdown may still be open after dismissal attempts")
+                    else:
+                        self.logger.debug("Verified dropdown is no longer visible")
+                except Exception as verify_err:
+                    self.logger.debug(f"Error verifying dropdown dismissal: {verify_err}")
+
+            # Convert set of tuples back to list of dicts
+            options = [{"value": original, "text": original} for norm, original in all_scraped_options] # Simplified structure for now
+
+            if is_target_field:
+                self.logger.debug(f"DEGREE_FIELD_LOG: Final options scraped for target field: {options[:10]}..." if len(options) > 10 else options) # Log first 10 options
+
+            if options:
+                self.logger.info(f"Successfully scraped {len(options)} unique options in total for element.")
+            else:
+                 self.logger.debug(f"Could not scrape any dynamic options for element.")
+                
+        except Exception as e:
+            self.logger.error(f"Error scraping dynamic options: {e}", exc_info=True)
         
-        return validation_rules
-    
-    def _count_field_types(self, form_elements: List[Dict[str, Any]]) -> Dict[str, int]:
-        """Count occurrences of each field type."""
-        type_counts = {}
-        
-        for field in form_elements:
-            field_type = field.get("type", "text")
-            type_counts[field_type] = type_counts.get(field_type, 0) + 1
-        
-        return type_counts
-    
-    def _analyze_frame_distribution(self, form_elements: List[Dict[str, Any]]) -> Dict[str, int]:
-        """Analyze distribution of fields across frames."""
-        frame_counts = {}
-        
-        for field in form_elements:
-            frame = field.get("frame", "main")
-            frame_counts[frame] = frame_counts.get(frame, 0) + 1
-        
-        return frame_counts
-    
-    def _generate_strategic_insights(
-        self,
-        form_elements: List[Dict[str, Any]],
-        field_relationships: Dict[str, List[str]],
-        job_details: Optional[Dict[str, Any]]
-    ) -> List[str]:
-        """Generate strategic insights for form handling."""
-        insights = []
-        
-        # Analyze form complexity
-        total_fields = len(form_elements)
-        required_fields = len([f for f in form_elements if f.get("required", False)])
-        custom_dropdowns = len([f for f in form_elements if f.get("type") == "select"])
-        
-        if total_fields > 30:
-            insights.append(f"Complex form with {total_fields} fields - consider breaking into logical chunks")
-            
-        if required_fields / total_fields > 0.8:
-            insights.append(f"High proportion of required fields ({required_fields}/{total_fields})")
-            
-        if custom_dropdowns > 5:
-            insights.append(f"Form contains {custom_dropdowns} dropdowns - prepare for extensive option matching")
-            
-        # Check for potential challenges
-        frame_distribution = self._analyze_frame_distribution(form_elements)
-        if len(frame_distribution) > 1:
-            insights.append(f"Form spans {len(frame_distribution)} frames - careful frame management required")
-            
-        if field_relationships:
-            insights.append(f"Found {len(field_relationships)} field dependencies - handle in correct order")
-            
-        # Job-specific insights
-        if job_details:
-            job_title = job_details.get("title", "").lower()
-            if "senior" in job_title or "staff" in job_title:
-                insights.append("Senior position - emphasize leadership and advanced technical skills")
-            elif "engineer" in job_title:
-                insights.append("Technical role - focus on relevant technical experience and skills")
-        
-        return insights
-    
-    def _generate_selector_strategies(self, field: Dict[str, Any]) -> List[str]:
-        """Generate selector strategies for a field."""
-        strategies = []
-        
-        # Start with provided selector
-        if field.get("selector"):
-            strategies.append(field["selector"])
-            
-        # Add ID-based selector if available
-        if field.get("id"):
-            strategies.append(f"#{field['id']}")
-            
-        # Add name-based selector if available
-        if field.get("name"):
-            strategies.append(f"[name='{field['name']}']")
-            
-        # Add label-based selector if available
-        if field.get("label"):
-            strategies.append(f"label:has-text('{field['label']}')")
-            
-        # Add role-based selector for special elements
-        if field.get("role"):
-            strategies.append(f"[role='{field['role']}']")
-            
-        return strategies
+        return options
 
     @staticmethod
     async def extract_job_details(page, diagnostics_manager=None) -> Dict[str, Any]:

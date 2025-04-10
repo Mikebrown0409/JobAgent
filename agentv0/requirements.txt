@@ -1,0 +1,5 @@
+playwright
+google-generativeai
+crewai # Optional, but good for structure
+python-dotenv # For API keys
+playwright-stealth # Added for anti-detection

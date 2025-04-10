@@ -13,6 +13,8 @@ import re
 import uuid
 from datetime import datetime
 from pathlib import Path
+import traceback
+import yaml  # Add YAML support
 
 # LLM imports
 # Import CrewAI's LLM class
@@ -21,7 +23,6 @@ from crewai import LLM
 # Local imports
 from enterprise_job_agent.core.browser_manager import BrowserManager
 from enterprise_job_agent.core.job_extractor import extract_job_data
-from enterprise_job_agent.core.profile_manager import ProfileManager
 from enterprise_job_agent.core.crew_manager import JobApplicationCrew
 from enterprise_job_agent.core.frame_manager import AdvancedFrameManager
 from enterprise_job_agent.config import Config
@@ -29,9 +30,10 @@ from enterprise_job_agent.core.diagnostics_manager import DiagnosticsManager
 from enterprise_job_agent.core.action_executor import ActionExecutor
 from enterprise_job_agent.agents.form_analyzer_agent import FormAnalyzerAgent
 from enterprise_job_agent.agents.profile_adapter_agent import ProfileAdapterAgent
-from enterprise_job_agent.agents.application_executor_agent import ApplicationExecutorAgent
 from enterprise_job_agent.tools.form_interaction import FormInteraction
 from enterprise_job_agent.tools.element_selector import ElementSelector
+from enterprise_job_agent.agents.error_recovery_agent import ErrorRecoveryAgent
+from enterprise_job_agent.core.action_strategy_selector import ActionStrategySelector
 
 # Configure logging
 logging.basicConfig(
@@ -39,7 +41,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('job_application.log')
+        # logging.FileHandler('job_application.log') # Maybe disable this if logs go to run dir
     ]
 )
 
@@ -90,7 +92,6 @@ async def analyze_job_application(
     test_mode: bool = True,
     visible: bool = False,
     user_profile_path: Optional[str] = None,
-    output_dir: Optional[str] = None,
     verbose: bool = False
 ) -> Dict[str, Any]:
     """Analyze and process a job application.
@@ -99,8 +100,7 @@ async def analyze_job_application(
         url: URL of the job application
         test_mode: Whether to run in test mode (don't submit)
         visible: Whether to show the browser
-        user_profile_path: Path to the user profile JSON
-        output_dir: Directory to save results
+        user_profile_path: Path to the user profile JSON or YAML
         verbose: Whether to enable verbose output
         
     Returns:
@@ -109,19 +109,19 @@ async def analyze_job_application(
     if verbose:
         logging.getLogger().setLevel(logging.DEBUG)
     
-    # Generate a unique job ID
-    job_id = f"job_{uuid.uuid4().hex[:8]}"
+    # Generate a unique run ID based on timestamp
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    # Setup output directory
-    if not output_dir:
-        output_dir = Path(__file__).parent / "test_results" / job_id
-    else:
-        output_dir = Path(output_dir) / job_id
+    # Setup diagnostics with the run ID
+    diagnostics_manager = DiagnosticsManager(run_id=run_id)
     
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Setup diagnostics
-    diagnostics_manager = DiagnosticsManager()
+    # Optional: Add file handler for logging to the run directory
+    log_file_path = os.path.join(diagnostics_manager.run_output_dir, 'run.log')
+    file_handler = logging.FileHandler(log_file_path)
+    file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logging.getLogger().addHandler(file_handler)
+
+    logger.info(f"Starting job application analysis for URL: {url}, Run ID: {run_id}")
     
     # Create and initialize browser manager
     browser_manager = BrowserManager(visible=visible, diagnostics_manager=diagnostics_manager)
@@ -129,356 +129,296 @@ async def analyze_job_application(
     try:
         with diagnostics_manager.track_stage("initialization"):
             await browser_manager.initialize()
-        
-        # Initialize tools
-        element_selector = ElementSelector(browser_manager, diagnostics_manager)
-        form_interaction = FormInteraction(browser_manager, element_selector, diagnostics_manager)
-        
-        # Initialize action executor
-        action_executor = ActionExecutor(
-            browser_manager=browser_manager,
-            element_selector=element_selector,
-            form_interaction=form_interaction,
-            diagnostics_manager=diagnostics_manager
-        )
-        
-        # Load LLM
-        # Use CrewAI's LLM class with Gemini model
-        try:
-            import os
-            from crewai import LLM
             
-            # Use environment variable for API key
-            api_key = os.environ.get("GEMINI_API_KEY")
-            if not api_key:
-                logger.warning("No GEMINI_API_KEY found in environment variables. Some functionalities might be limited.")
+            # --- Navigate to the URL AFTER browser initialization --- 
+            logger.info(f"Navigating to target URL: {url}")
+            await browser_manager.navigate(url) # Use BrowserManager's navigate
+            await browser_manager.wait_for_load() # Wait for page to settle
+            logger.info("Navigation complete.")
+            # --- End Navigation ---
             
-            # Initialize LLM with CrewAI's LLM class
-            llm = LLM(
-                model="gemini/gemini-2.0-flash",
-                api_key=api_key,
-                temperature=0.2
+            # Initialize LLM
+            llm = initialize_llm() # Call the separate function
+            
+            # Initialize tools
+            element_selector = ElementSelector(browser_manager, diagnostics_manager)
+            form_interaction = FormInteraction(browser_manager, element_selector, diagnostics_manager)
+            
+            # Instantiate ActionStrategySelector
+            strategy_selector = ActionStrategySelector(llm=llm, diagnostics_manager=diagnostics_manager)
+            
+            # Initialize action executor AFTER LLM and strategy selector are initialized
+            action_executor = ActionExecutor(
+                browser_manager=browser_manager,
+                form_interaction=form_interaction,
+                element_selector=element_selector,
+                diagnostics_manager=diagnostics_manager,
+                strategy_selector=strategy_selector,
+                llm=llm
             )
             
-            # Test that the LLM works by calling a simple prompt
-            logger.debug("Testing LLM with a simple prompt")
-            try:
-                test_result = llm.call("Say hello!")
-                logger.debug(f"LLM test result: {test_result}")
-            except Exception as e:
-                logger.error(f"LLM test failed: {e}")
-                raise ValueError(f"LLM initialization succeeded but test call failed: {e}")
-                
-        except ImportError as e:
-            logger.error(f"Failed to import required LLM libraries: {e}")
-            raise
-        
-        # Initialize agents
-        form_analyzer_agent = FormAnalyzerAgent(llm=llm, verbose=verbose)
-        profile_adapter_agent = ProfileAdapterAgent(llm=llm, verbose=verbose)
-        application_executor_agent = ApplicationExecutorAgent(
-            llm=llm,
-            action_executor=action_executor,
-            diagnostics_manager=diagnostics_manager,
-            verbose=verbose
-        )
-        
-        # Load user profile
-        if user_profile_path:
-            with open(user_profile_path, "r") as f:
-                user_profile = json.load(f)
-        else:
-            # Use a sample profile for testing
-            user_profile = {
-                "personal_info": {
-                    "first_name": "Alex",
-                    "last_name": "Chen",
-                    "email": "alex.chen@example.com",
-                    "phone": "555-123-4567",
-                    "location": {
-                        "city": "San Francisco",
-                        "state": "California",
-                        "country": "United States"
-                    }
-                },
-                "education": [
-                    {
-                        "school": "University of California, Berkeley",
-                        "degree": "Bachelor of Science",
-                        "field_of_study": "Computer Science",
-                        "graduation_date": "2021-05-15"
-                    }
-                ],
-                "work_experience": [
-                    {
-                        "company": "Tech Innovations Inc.",
-                        "title": "Software Engineer",
-                        "location": "San Francisco, CA",
-                        "start_date": "2021-06-01",
-                        "end_date": None,
-                        "is_current": True,
-                        "description": "Developing cloud-based solutions using modern frameworks"
-                    },
-                    {
-                        "company": "StartUp Labs",
-                        "title": "Software Engineering Intern",
-                        "location": "Palo Alto, CA",
-                        "start_date": "2020-05-01",
-                        "end_date": "2020-08-31",
-                        "is_current": False,
-                        "description": "Worked on front-end development using React"
-                    }
-                ],
-                "skills": [
-                    "JavaScript", "React", "Node.js", "Python", "Java", "Docker", "AWS"
-                ],
-                "languages": [
-                    {
-                        "language": "English",
-                        "proficiency": "Native"
-                    },
-                    {
-                        "language": "Mandarin",
-                        "proficiency": "Fluent"
-                    }
-                ],
-                "preferences": {
-                    "willing_to_relocate": True,
-                    "work_authorization": "US Citizen",
-                    "desired_salary": "Competitive",
-                    "desired_job_type": "Full-time"
-                },
-                "demographic_info": {
-                    "gender": "Male",
-                    "race": "White",
-                    "hispanic_ethnicity": "No",
-                    "disability_status": "No",
-                    "veteran_status": "No"
-                },
-                "projects": [
-                    {
-                        "title": "Community Marketplace",
-                        "description": "Built a full-stack marketplace application",
-                        "url": "https://github.com/alexchen/marketplace"
-                    }
-                ],
-                "certifications": [
-                    {
-                        "name": "AWS Certified Developer",
-                        "issuer": "Amazon Web Services",
-                        "date": "2022-03-01"
-                    }
-                ],
-                "links": {
-                    "linkedin": "https://linkedin.com/in/alexchen",
-                    "github": "https://github.com/alexchen",
-                    "portfolio": None
-                }
-            }
-        
-        # Navigate to the job URL
-        with diagnostics_manager.track_stage("navigation"):
-            logger.info(f"Navigating to {url}")
-            await browser_manager.goto(url)
-            await browser_manager.wait_for_load()
-        
-        # Extract form data from page
-        with diagnostics_manager.track_stage("form_extraction"):
-            logger.info("Extracting form data")
-            
-            # Get page HTML for enhanced form analysis
-            page_html = await browser_manager.get_page_html()
-            
-            # Use enhanced form analyzer to analyze HTML structure
-            form_structure = form_analyzer_agent.analyze_form_html(page_html, url)
-            
-            # Take a screenshot of the form
-            form_screenshot_path = output_dir / "initial_form.png"
-            await browser_manager.take_screenshot(str(form_screenshot_path))
-            
-            # Log structure
-            logger.debug(f"Form structure: {json.dumps(form_structure, indent=2)}")
-            
-            # Store form structure for debugging
-            with open(output_dir / "form_structure.json", "w") as f:
-                json.dump(form_structure, f, indent=2)
-        
-        # Generate a mapping from user profile to form fields
-        with diagnostics_manager.track_stage("profile_mapping"):
-            logger.info("Mapping user profile to form fields")
-            profile_mapping = await profile_adapter_agent.map_profile_to_form(user_profile, form_structure)
-            
-            # Store mapping for debugging
-            with open(output_dir / "profile_mapping.json", "w") as f:
-                json.dump(profile_mapping, f, indent=2)
-        
-        # Execute form filling
-        with diagnostics_manager.track_stage("form_execution"):
-            logger.info("Executing form filling")
-            execution_results = await application_executor_agent.execute_plan(profile_mapping, form_structure)
-            
-            # Store results for debugging
-            with open(output_dir / "execution_results.json", "w") as f:
-                json.dump(execution_results, f, indent=2)
-            
-            # Take final screenshot
-            final_screenshot_path = output_dir / "final_form.png"
-            await browser_manager.take_screenshot(str(final_screenshot_path))
-        
-        # Generate summary and store results
-        with open(output_dir / "results.json", "w") as f:
-            results = {
-                "job_id": job_id,
-                "url": url,
-                "test_mode": test_mode,
-                "execution_results": execution_results,
-                "diagnostics": diagnostics_manager.get_diagnostics()
-            }
-            json.dump(results, f, indent=2)
-        
-        logger.info(f"Job application completed successfully ({'TEST MODE - No submission made' if test_mode else 'SUBMITTED'})")
-        logger.info(f"Results saved to {output_dir / 'results.json'}")
-        
-        # Print detailed field execution results
-        field_results = execution_results.get("field_results", [])
-        fields_filled = execution_results.get("fields_filled", 0)
-        fields_failed = execution_results.get("fields_failed", 0)
-        field_type_stats = execution_results.get("field_type_stats", {})
-        
-        print("\n===== FIELD EXECUTION RESULTS =====")
-        print(f"Fields filled: {fields_filled}")
-        print(f"Fields failed: {fields_failed}")
-        print()
-        
-        # Print field type statistics
-        print("Field Type Statistics:")
-        for field_type, stats in field_type_stats.items():
-            success_rate = (stats["success"] / stats["total"]) * 100
-            print(f"  {field_type}: {stats['success']}/{stats['total']} successful ({success_rate:.1f}%)")
-        print()
-        
-        # Print detailed field results
-        print("Detailed Field Results:")
-        for result in field_results:
-            field_id = result.get("field_id", "")
-            success = result.get("success", False)
-            field_type = result.get("field_type", "unknown")
-            
-            if success:
-                value = result.get("value", "")
-                # Truncate long values
-                if isinstance(value, str) and len(value) > 30:
-                    value = value[:27] + "..."
-                print(f"  ✓ {field_id} ({field_type}): {value}")
+            # Initialize agents
+            form_analyzer_agent = FormAnalyzerAgent(llm=llm, verbose=verbose)
+            profile_adapter_agent = ProfileAdapterAgent(llm=llm, verbose=verbose)
+            error_recovery_agent = ErrorRecoveryAgent.create(llm=llm, verbose=verbose)
+
+            # Load user profile
+            if user_profile_path:
+                with open(user_profile_path, "r") as f:
+                    # Detect file format based on extension
+                    if user_profile_path.endswith('.yaml') or user_profile_path.endswith('.yml'):
+                        user_profile = yaml.safe_load(f)
+                    else:
+                        try:
+                            user_profile = json.load(f)
+                        except json.JSONDecodeError:
+                            # Fallback to YAML if JSON parsing fails
+                            f.seek(0)  # Reset file pointer to beginning
+                            user_profile = yaml.safe_load(f)
             else:
-                error = result.get("error", "Unknown error")
-                print(f"  ✗ {field_id} ({field_type}): ERROR: {error}")
+                # Use a sample profile for testing
+                user_profile = {
+                    "personal_info": {
+                        "first_name": "Alex",
+                        "last_name": "Chen",
+                        "email": "alex.chen@example.com",
+                        "phone": "555-123-4567",
+                        "location": {
+                            "city": "San Francisco",
+                            "state": "California",
+                            "country": "United States"
+                        }
+                    },
+                    "education": [
+                        {
+                            "school": "University of California, Berkeley",
+                            "degree": "Bachelor of Science",
+                            "field_of_study": "Computer Science",
+                            "graduation_date": "2021-05-15"
+                        }
+                    ],
+                    "work_experience": [
+                        {
+                            "company": "Tech Innovations Inc.",
+                            "title": "Software Engineer",
+                            "location": "San Francisco, CA",
+                            "start_date": "2021-06-01",
+                            "end_date": None,
+                            "is_current": True,
+                            "description": "Developing cloud-based solutions using modern frameworks"
+                        },
+                        {
+                            "company": "StartUp Labs",
+                            "title": "Software Engineering Intern",
+                            "location": "Palo Alto, CA",
+                            "start_date": "2020-05-01",
+                            "end_date": "2020-08-31",
+                            "is_current": False,
+                            "description": "Worked on front-end development using React"
+                        }
+                    ],
+                    "skills": [
+                        "JavaScript", "React", "Node.js", "Python", "Java", "Docker", "AWS"
+                    ],
+                    "languages": [
+                        {
+                            "language": "English",
+                            "proficiency": "Native"
+                        },
+                        {
+                            "language": "Mandarin",
+                            "proficiency": "Fluent"
+                        }
+                    ],
+                    "preferences": {
+                        "willing_to_relocate": True,
+                        "work_authorization": "US Citizen",
+                        "desired_salary": "Competitive",
+                        "desired_job_type": "Full-time"
+                    },
+                    "demographic_info": {
+                        "gender": "Male",
+                        "race": "White",
+                        "hispanic_ethnicity": "No",
+                        "disability_status": "No",
+                        "veteran_status": "No"
+                    },
+                    "projects": [
+                        {
+                            "title": "Community Marketplace",
+                            "description": "Built a full-stack marketplace application",
+                            "url": "https://github.com/alexchen/marketplace"
+                        }
+                    ],
+                    "certifications": [
+                        {
+                            "name": "AWS Certified Developer",
+                            "issuer": "Amazon Web Services",
+                            "date": "2022-03-01"
+                        }
+                    ],
+                    "links": {
+                        "linkedin": "https://linkedin.com/in/alexchen",
+                        "github": "https://github.com/alexchen",
+                        "portfolio": None
+                    }
+                }
+                logger.warning("No user profile provided, using sample profile.")
+            
+        # Initialize Crew Manager
+        with diagnostics_manager.track_stage("crew_initialization"):
+            crew_manager = JobApplicationCrew(
+                url=url,
+                user_profile=user_profile,
+                browser_manager=browser_manager,
+                action_executor=action_executor,
+                form_analyzer_agent=form_analyzer_agent,
+                profile_adapter_agent=profile_adapter_agent,
+                error_recovery_agent=error_recovery_agent, # Pass the recovery agent
+                diagnostics_manager=diagnostics_manager,
+                test_mode=test_mode,
+            )
+
+        # Kick off the job application process
+        results = await crew_manager.run()
+
+        # Save final diagnostics (stages, overall result) if needed, 
+        # though intermediate results are the primary goal here.
+        # diagnostics_manager.save_final_report() # Example - if we add such a method
         
+        logger.info(f"Job application processing finished for Run ID: {run_id}. Results: {results}")
         return results
-        
+
     except Exception as e:
-        logger.error(f"Error in job application process: {str(e)}")
-        
-        # Save error information
-        with open(output_dir / "error.json", "w") as f:
-            error_info = {
-                "error": str(e),
-                "diagnostics": diagnostics_manager.get_diagnostics() if diagnostics_manager else {}
-            }
-            json.dump(error_info, f, indent=2)
-        
-        # Take error screenshot if browser is available
-        try:
-            error_screenshot_path = output_dir / "error.png"
-            await browser_manager.take_screenshot(str(error_screenshot_path))
-        except:
-            pass
-        
-        return {
-            "success": False,
-            "error": str(e),
-            "job_id": job_id
-        }
+        error_msg = f"An unexpected error occurred during job application processing for Run ID {run_id}: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        diagnostics_manager.error(error_msg) # Log error via diagnostics
+        # Ensure the current stage is marked as failed if an exception bubbles up
+        if diagnostics_manager.current_stage:
+             diagnostics_manager.end_stage(success=False, error=f"Unhandled exception: {str(e)}")
+        return {"status": "error", "message": error_msg, "run_id": run_id, "traceback": traceback.format_exc()}
     
     finally:
-        logger.info("Closing centralized BrowserManager.")
+        logger.info(f"Cleaning up browser for Run ID: {run_id}")
         await browser_manager.close()
+        # Remove the file handler specific to this run
+        logging.getLogger().removeHandler(file_handler)
 
 async def execute_form(
     form_structure: Dict[str, Any],
     profile_mapping: Dict[str, Any],
     browser_manager: BrowserManager,
-    visible: bool = False,
+    llm: Any, 
+    verbose: bool,
+    output_dir: Path,
     test_mode: bool = True
 ) -> Dict[str, Any]:
     """Execute form filling based on the form structure and profile mapping.
     
     Args:
         form_structure: Analyzed form structure
-        profile_mapping: Profile to form field mapping
+        profile_mapping: Profile to form field mapping (actually the pre-generated action plan)
         browser_manager: Browser manager instance
-        visible: Whether to make the browser visible
+        llm: Language model instance
+        verbose: Verbosity flag
+        output_dir: Directory to save results
         test_mode: Whether to run in test mode without submitting
         
     Returns:
         Dictionary with execution results
     """
-    logger.info("Executing form filling")
+    logger.info("Executing form using helper function")
     
-    # Initialize the action executor
-    action_executor = ActionExecutor(browser_manager=browser_manager)
-    
-    # Important: Set test_mode to False in the action executor to make it 
-    # actually interact with the browser instead of just simulating
-    action_executor.set_test_mode(test_mode)
-    
-    # Initialize the application executor agent
-    application_executor = ApplicationExecutorAgent(action_executor=action_executor)
-    
-    # Execute the plan
-    results = await application_executor.execute_plan(
-        profile_mapping=profile_mapping,
-        form_structure=form_structure,
-        test_mode=test_mode
+    # Initialize tools and executor (as done in analyze_job_application)
+    diagnostics_manager = DiagnosticsManager() # Or get from browser_manager if shared
+    element_selector = ElementSelector(browser_manager, diagnostics_manager)
+    form_interaction = FormInteraction(browser_manager, element_selector, diagnostics_manager)
+    # Instantiate ActionStrategySelector within this function's scope
+    strategy_selector = ActionStrategySelector(llm=llm, diagnostics_manager=diagnostics_manager) 
+    action_executor = ActionExecutor(
+        browser_manager=browser_manager, 
+        form_interaction=form_interaction,
+        element_selector=element_selector,
+        diagnostics_manager=diagnostics_manager,
+        strategy_selector=strategy_selector,
+        llm=llm
+    )
+    action_executor.set_test_mode(not test_mode) # Set based on test_mode flag
+
+    # Assume profile_mapping already contains the list of ActionContext objects
+    action_plan = profile_mapping # Rename for clarity
+    if not isinstance(action_plan, list): 
+        logger.error(f"execute_form expected a list of actions (ActionContext) but got {type(action_plan)}. Regenerating plan.")
+        # Need to regenerate the plan if it wasn't passed correctly
+        profile_adapter = ProfileAdapterAgent(llm=llm, verbose=verbose)
+        # Need user_profile here - how to get it?
+        # Let's assume it needs to be passed in or loaded
+        # For now, raise error or return empty results
+        logger.error("Cannot regenerate action plan within execute_form without user_profile.")
+        return {"error": "Invalid action plan received and cannot regenerate."} 
+
+    logger.info(f"Executing action plan with {len(action_plan)} actions.")
+    # Execute the plan (list of actions)
+    results = await action_executor.execute_form_actions(
+        actions=action_plan,
+        stop_on_error=False # Continue on error in test mode? Maybe make configurable
     )
     
-    return results
+    # Format results similar to analyze_job_application
+    # This part needs careful implementation based on what execute_form_actions returns
+    # Assuming it returns a dict like: {action_key: (success, error_message)}
+    formatted_results = {
+        "fields_filled": sum(1 for success, _ in results.values() if success),
+        "fields_failed": sum(1 for success, _ in results.values() if not success),
+        "field_results": [
+            {
+             "field_id": key.split('_')[1] if len(key.split('_')) > 1 else key, # Attempt to extract ID
+             "field_type": key.split('_')[0] if len(key.split('_')) > 0 else "unknown", # Attempt to extract type
+             "success": success,
+             "error": error
+            } for key, (success, error) in results.items()
+        ],
+        # field_type_stats needs more complex aggregation based on field_results
+        "field_type_stats": {}
+    }
+
+    # Aggregate field_type_stats
+    stats = {}
+    for res in formatted_results["field_results"]:
+        f_type = res["field_type"]
+        if f_type not in stats:
+            stats[f_type] = {"total": 0, "success": 0}
+        stats[f_type]["total"] += 1
+        if res["success"]:
+            stats[f_type]["success"] += 1
+    formatted_results["field_type_stats"] = stats
+
+    return formatted_results
 
 def main():
-    """Main entry point for the job application agent."""
-    parser = argparse.ArgumentParser(description="Enterprise Job Application Agent")
-    parser.add_argument("action", choices=["apply", "analyze", "test"], help="Action to perform")
-    parser.add_argument("--url", required=True, help="URL of the job application")
-    parser.add_argument("--profile", help="Path to user profile JSON")
-    parser.add_argument("--output", help="Output directory for results")
-    parser.add_argument("--visible", action="store_true", help="Show the browser during execution")
-    parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
-    
+    """Main entry point for the CLI."""
+    parser = argparse.ArgumentParser(description="Automate job applications.")
+    parser.add_argument("url", help="URL of the job application page.")
+    parser.add_argument("-p", "--profile", help="Path to the user profile JSON or YAML file.")
+    parser.add_argument("--test", action="store_true", default=True, help="Run in test mode (don't submit). Default is True.")
+    parser.add_argument("--no-test", dest="test", action="store_false", help="Run in live mode (attempt submission).")
+    parser.add_argument("--visible", action="store_true", help="Show the browser window.")
+    # parser.add_argument("--output-dir", help="Directory to save run results.") # Removed
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging.")
+
     args = parser.parse_args()
-    
-    # Run the job application process
-    test_mode = args.action in ["test", "analyze"]
-    
+
     try:
-        results = asyncio.run(
-            analyze_job_application(
-                url=args.url,
-                test_mode=test_mode,
-                visible=args.visible,
-                user_profile_path=args.profile,
-                output_dir=args.output,
-                verbose=args.verbose
-            )
-        )
-        
-        if results.get("success", False) is False and "error" in results:
-            logger.error(f"Job application failed: {results['error']}")
-            sys.exit(1)
-        else:
-            logger.info(f"Test completed successfully. Results saved to {args.output}")
-            
+        asyncio.run(analyze_job_application(
+            url=args.url,
+            test_mode=args.test,
+            visible=args.visible,
+            user_profile_path=args.profile,
+            # output_dir=args.output_dir, # Removed
+            verbose=args.verbose
+        ))
     except Exception as e:
-        logger.error(f"Error running job application: {str(e)}")
+        logger.critical(f"Application failed with unhandled exception: {e}", exc_info=True)
         sys.exit(1)
 
 if __name__ == "__main__":

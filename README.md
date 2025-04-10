@@ -1,178 +1,156 @@
-# Enterprise Job Application Agent
+# Job Application Agent
 
-An AI-powered system for automatically applying to job postings using CrewAI, Playwright, and advanced NLP techniques.
+An AI-powered automated job application system that helps you apply to multiple job postings efficiently.
 
-## Project Structure
+## Overview
 
-```
-enterprise_job_agent/
-├── main.py                 # Entry point and CLI interface
-├── config.py              # Configuration and environment settings
-├── agents/                # AI Agents using CrewAI
-│   ├── __init__.py
-│   ├── profile_adapter_agent.py    # Adapts user profiles to job requirements
-│   ├── form_analyzer_agent.py      # Analyzes form structure and requirements
-│   ├── application_executor_agent.py # Executes form filling operations
-│   ├── session_manager_agent.py    # Manages application session state
-│   └── error_recovery_agent.py     # Handles error recovery
-├── core/                  # Core system components
-│   ├── __init__.py
-│   ├── action_executor.py          # Executes form actions reliably
-│   ├── browser_manager.py          # Manages browser sessions and frames
-│   ├── crew_manager.py             # Orchestrates AI agent interactions
-│   └── diagnostics_manager.py      # Tracks system performance and issues
-└── tools/                 # Specialized tools and utilities
-    ├── __init__.py
-    ├── data_formatter.py          # Formats data for form submission
-    ├── dropdown_matcher.py        # Smart dropdown option matching (70% threshold)
-    ├── element_selector.py        # Enhanced element selection
-    ├── field_identifier.py        # Form field identification
-    └── form_interaction.py        # Form interaction utilities
-
-```
-
-## System Workflow
-
-1. **Initialization** (`main.py`):
-   - Loads configuration from `config.py`
-   - Initializes core managers and tools
-   - Sets up logging and diagnostics
-
-2. **Job Application Process**:
-   ```mermaid
-   graph TD
-      A[main.py] --> B[crew_manager.py]
-      B --> C[Session Management]
-      B --> D[Form Analysis]
-      B --> E[Profile Mapping]
-      B --> F[Application Execution]
-      
-      C --> |session_manager_agent.py| G[Manage Session State]
-      D --> |form_analyzer_agent.py| H[Analyze Form Structure]
-      E --> |profile_adapter_agent.py| I[Map Profile to Fields]
-      F --> |application_executor_agent.py| J[Execute Actions]
-      
-      G --> |browser_manager.py| K[Browser Control]
-      H --> |field_identifier.py| L[Identify Fields]
-      I --> |data_formatter.py| M[Format Data]
-      J --> |action_executor.py| N[Execute Form Actions]
-      
-      K --> |element_selector.py| O[Select Elements]
-      L --> |dropdown_matcher.py| P[Match Dropdowns]
-      M --> |form_interaction.py| Q[Form Interactions]
-   ```
-
-3. **Core Components**:
-   - `crew_manager.py`: Orchestrates AI agents and their tasks
-   - `browser_manager.py`: Handles browser automation using Playwright
-   - `action_executor.py`: Executes form actions reliably
-   - `diagnostics_manager.py`: Monitors performance and errors
-
-4. **Specialized Agents**:
-   - `session_manager_agent.py`: Manages application session state and navigation
-   - `application_executor_agent.py`: Executes form filling operations
-   - `profile_adapter_agent.py`: Adapts user profiles to job requirements
-   - `form_analyzer_agent.py`: Analyzes form structure
-   - `error_recovery_agent.py`: Handles error recovery
-
-5. **Tools and Utilities**:
-   - `field_identifier.py`: Identifies form field types and requirements
-   - `dropdown_matcher.py`: Smart matching for dropdown options (70% threshold)
-   - `data_formatter.py`: Formats data for form fields
-   - `form_interaction.py`: Handles form interactions reliably
-   - `element_selector.py`: Enhanced element selection with smart waiting
+This system uses AI to intelligently identify and fill out job application forms across various job platforms. The agent is designed to adapt to different form layouts and field types, making it more robust than traditional automation scripts that rely on hardcoded selectors.
 
 ## Key Features
 
-- Smart form field identification and mapping
-- Reliable dropdown option matching (70% threshold)
-- Session state management and navigation
-- Comprehensive error handling and recovery
-- Detailed diagnostics and logging
-- Frame-aware browser automation
-- Smart waiting and retry mechanisms
+- **AI-powered field identification**: Uses AI to identify form fields based on their context and labels
+- **Adaptive field mapping**: Maps your profile data to the appropriate fields on the form
+- **Fallback value generation**: Provides reasonable responses for commonly asked questions not in your profile
+- **Batch processing**: Apply to multiple job postings in sequence
+- **Detailed logging**: Keeps track of application attempts and results
+- **Customizable**: Easily extend to support additional job platforms
 
-## Configuration
+## Setup
 
-Key settings in `config.py`:
-- API credentials and endpoints
-- Browser settings
-- Rate limiting parameters
-- Logging configuration
-- Dropdown matching threshold (70%)
-
-## Getting Started
-
-### Prerequisites
-
-- Python 3.9+
-- A Gemini API key (can be obtained from Google AI Studio)
-
-### Installation
-
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/enterprise_job_agent.git
-   cd enterprise_job_agent
-   ```
-
-2. Create a virtual environment:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-
-3. Install the dependencies:
+1. Clone this repository
+2. Install the required dependencies:
    ```bash
    pip install -r requirements.txt
    ```
+3. Create your `profile.json` file with your resume information
 
-4. Set up your API key:
-   ```bash
-   export GEMINI_API_KEY="your_api_key_here"
-   ```
+## Usage
 
-### Testing
+### Basic Usage
 
-1. Run the integration tests:
-   ```bash
-   pytest enterprise_job_agent/tests/test_workflow_integration.py -v
-   ```
+To process all jobs in the jobs.txt file:
 
-2. Run a test application (will not actually submit):
-   ```bash
-   python enterprise_job_agent/main.py test --url "https://job-boards.greenhouse.io/discord/jobs/7845336002"
-   ```
+```bash
+cd agentv0
+python process_jobs.py
+```
 
-### Usage
+### Command Line Options
 
-1. Update your profile in `user_profile.json`:
-   ```json
-   {
-     "name": "Your Name",
-     "education": "Your University",
-     "experience": "Your Experience"
-   }
-   ```
+The `process_jobs.py` script supports several command line options:
 
-2. Run with any supported job board:
-   ```bash
-   python enterprise_job_agent/main.py apply --url "JOB_URL" [--test-mode]
-   ```
+```
+usage: process_jobs.py [-h] [--jobs-file JOBS_FILE] [--profile PROFILE] [--headless] [--delay DELAY]
+                      [--start-index START_INDEX] [--max-jobs MAX_JOBS] [--retry-failed] [--single-url SINGLE_URL]
 
-## Success Metrics
+Process job applications using main_v0.py
 
-- Completion Rate: 90%+ successful test applications
-- Error Recovery: 80%+ recovery from common errors
-- Speed: <2 minutes per form (excluding network delays)
-- Reliability: Smart matching for dropdowns with 70% threshold
+options:
+  -h, --help                      show this help message and exit
+  --jobs-file JOBS_FILE           Path to the file containing job URLs (default: jobs.txt)
+  --profile PROFILE               Path to the profile JSON file (default: profile.json)
+  --headless                      Run in headless mode (browser not visible)
+  --delay DELAY                   Delay in seconds between processing jobs (default: 5)
+  --start-index START_INDEX       Start processing from this index (default: 0)
+  --max-jobs MAX_JOBS             Maximum number of jobs to process (default: all)
+  --retry-failed                  Retry failed jobs after initial run
+  --single-url SINGLE_URL         Process a single URL instead of reading from jobs file
+```
+
+### Examples
+
+Process a single job URL:
+```bash
+python process_jobs.py --single-url "https://jobs.example.com/job/12345"
+```
+
+Process jobs in headless mode (browser not visible):
+```bash
+python process_jobs.py --headless
+```
+
+Process 5 jobs starting from the 10th job in the list:
+```bash
+python process_jobs.py --start-index 10 --max-jobs 5
+```
+
+Retry failed jobs automatically:
+```bash
+python process_jobs.py --retry-failed
+```
+
+### Checking Fallback Values
+
+To check what fallback values will be used for common fields:
+
+```bash
+python check_fallbacks.py
+```
+
+## Project Structure
+
+- `agentv0/main_v0.py` - The main script that orchestrates the job application process
+- `agentv0/adaptive_mapper.py` - Maps profile data to form fields and generates fallbacks
+- `agentv0/probe_page_structure.py` - Extracts page structure for AI analysis
+- `agentv0/strategies/` - Strategy implementations for different job platforms
+- `agentv0/process_jobs.py` - Batch processing script for multiple jobs
+- `agentv0/check_fallbacks.py` - Utility to check fallback value generation
+
+## Creating Your Profile
+
+Your `profile.json` file should contain your resume information. Here's an example structure:
+
+```json
+{
+  "basics": {
+    "name": "Jane Doe",
+    "email": "jane@example.com",
+    "phone": "123-456-7890",
+    "location": {
+      "address": "123 Main St",
+      "city": "San Francisco",
+      "region": "CA",
+      "postalCode": "94105",
+      "country": "US"
+    }
+  },
+  "work": [
+    {
+      "company": "Example Corp",
+      "position": "Senior Developer",
+      "startDate": "2020-01-01",
+      "endDate": "Present",
+      "summary": "Led development of key features..."
+    }
+  ],
+  "education": [
+    {
+      "institution": "University of Example",
+      "area": "Computer Science",
+      "studyType": "Bachelor's",
+      "startDate": "2014-09-01",
+      "endDate": "2018-05-01"
+    }
+  ],
+  "skills": [
+    {
+      "name": "JavaScript",
+      "level": "Advanced"
+    }
+  ],
+  "languages": [
+    {
+      "language": "English",
+      "fluency": "Native"
+    }
+  ]
+}
+```
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgments
-
-- CrewAI framework for multi-agent orchestration
-- Google Gemini for AI capabilities
-- Playwright for browser automation 
+This project is licensed under the MIT License - see the LICENSE file for details. 

@@ -10,7 +10,7 @@ from enterprise_job_agent.agents.form_analyzer_agent import FormAnalyzerAgent
 logger = logging.getLogger(__name__)
 
 async def extract_form_elements(page: Page) -> List[Dict[str, Any]]:
-    """Extract form elements from the page."""
+    """Extract form elements from the page, including their vertical position."""
     form_elements = []
     
     # Common form element selectors
@@ -31,6 +31,10 @@ async def extract_form_elements(page: Page) -> List[Dict[str, Any]]:
                     element_required = await element.get_attribute("required") is not None
                     element_placeholder = await element.get_attribute("placeholder")
                     
+                    # Get element position (bounding box)
+                    bounding_box = await element.bounding_box()
+                    y_coordinate = bounding_box['y'] if bounding_box else None
+                    
                     # Get label text if available
                     label_text = None
                     if element_id:
@@ -46,7 +50,8 @@ async def extract_form_elements(page: Page) -> List[Dict[str, Any]]:
                         "required": element_required,
                         "placeholder": element_placeholder,
                         "label": label_text,
-                        "selector": selector
+                        "selector": selector,
+                        "y_coordinate": y_coordinate
                     }
                     
                     # Add validation attributes if present

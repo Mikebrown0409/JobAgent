@@ -11,6 +11,7 @@ import argparse
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
+import pytest # Add import for pytest
 
 # Add parent directory to path to import enterprise_job_agent modules
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -20,7 +21,9 @@ from enterprise_job_agent.core.diagnostics_manager import DiagnosticsManager
 from enterprise_job_agent.agents.form_analyzer_agent import FormAnalyzerAgent
 from enterprise_job_agent.agents.profile_adapter_agent import ProfileAdapterAgent
 from enterprise_job_agent.core.action_executor import ActionExecutor
-from enterprise_job_agent.agents.application_executor_agent import ApplicationExecutorAgent
+from enterprise_job_agent.core.action_executor import ActionContext
+from enterprise_job_agent.tools.element_selector import ElementSelector
+from enterprise_job_agent.tools.form_interaction import FormInteraction
 from enterprise_job_agent.main import execute_form
 
 # Import CrewAI LLM
@@ -28,7 +31,7 @@ from crewai import LLM
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler()
@@ -53,34 +56,60 @@ def initialize_llm():
         temperature=0.2
     )
 
-# Create test profile
-def create_test_profile():
-    """Create a test user profile."""
-    # Base directory for test data
-    test_data_dir = os.path.join(os.path.dirname(__file__), "test_data")
+# Load user profile from test_user
+def load_user_profile():
+    """Load the detailed user profile from test_user directory."""
+    # Path to user profile JSON
+    profile_path = os.path.join(os.path.dirname(__file__), "test_user", "user_profile.json")
     
+    # Check if file exists
+    if not os.path.exists(profile_path):
+        logger.error(f"User profile not found at {profile_path}")
+        sys.exit(1)
+    
+    # Load the JSON profile
+    with open(profile_path, 'r') as f:
+        user_data = json.load(f)
+    
+    # Base directory for test files
+    test_user_dir = os.path.join(os.path.dirname(__file__), "test_user")
+    
+    # Create a standardized profile structure
     return {
         "personal_info": {
-            "first_name": "Alex",
-            "last_name": "Chen",
-            "email": "alex.chen@example.com",
-            "phone": "555-123-4567",
+            "first_name": user_data["personal"]["first_name"],
+            "last_name": user_data["personal"]["last_name"],
+            "email": user_data["personal"]["email"],
+            "phone": user_data["personal"]["phone"],
+            "linkedin": user_data["personal"].get("linkedin", ""),
             "location": {
-                "city": "San Francisco",
-                "state": "California",
-                "country": "United States"
+                "city": user_data["location"]["city"],
+                "state": user_data["location"]["state"],
+                "country": user_data["location"]["country"]
             }
         },
-        "resume_path": os.path.join(test_data_dir, "resume.txt"),
-        "cover_letter_path": os.path.join(test_data_dir, "cover_letter.txt"),
+        "resume_path": os.path.join(test_user_dir, user_data["documents"]["resume"]) if user_data["documents"]["resume"] else "",
+        "cover_letter_path": os.path.join(test_user_dir, user_data["documents"].get("cover_letter", "")),
         "education": [
             {
-                "school": "University of California, Berkeley",
-                "degree": "Bachelor of Science",
-                "field_of_study": "Computer Science",
-                "graduation_date": "2021-05-15"
-            }
-        ]
+                "school": edu["school"],
+                "degree": edu["degree"],
+                "field_of_study": edu["discipline"],
+                "graduation_year": edu["grad_year"]
+            } for edu in user_data["education"]
+        ],
+        "diversity": {
+            "gender": user_data["diversity"]["gender"],
+            "race": user_data["diversity"]["race"],
+            "hispanic": user_data["diversity"]["hispanic"],
+            "veteran": user_data["diversity"]["veteran"],
+            "disability": user_data["diversity"]["disability"]
+        },
+        "preferences": {
+            "work_authorization": user_data["preferences"]["work_authorization"],
+            "commute_willingness": user_data["preferences"]["commute_willingness"]
+        },
+        "custom_questions": user_data["custom_questions"]
     }
 
 # Print execution results
@@ -123,8 +152,16 @@ def print_execution_results(results: Dict[str, Any]):
             print(f"  ✗ {field_id} ({field_type}): ERROR: {error}")
 
 # Main test function
-async def test_discord_application(args):
+@pytest.mark.asyncio # Add the pytest-asyncio decorator
+async def test_discord_application():
     """Test Discord job application process."""
+    # --- Hardcoded Config for Pytest --- 
+    visible = True # Run with visible browser to watch the form filling
+    verbose = True # Enable verbose logging for tests
+    slow = True # Run in slow mode for better visibility
+    delay = 0.5 # Longer delay to see each field being filled
+    # ---
+
     # Create output directory for results
     test_results_dir = os.path.join(os.path.dirname(__file__), "test_results")
     job_id = f"job_a34a82b5"  # Fixed ID for test
@@ -138,7 +175,7 @@ async def test_discord_application(args):
     
     # Create browser manager
     browser_manager = BrowserManager(
-        visible=args.visible,
+        visible=visible,
         diagnostics_manager=diagnostics_manager
     )
     
@@ -158,7 +195,7 @@ async def test_discord_application(args):
         llm = initialize_llm()
         
         # Create form analyzer agent
-        form_analyzer = FormAnalyzerAgent(llm=llm, verbose=args.verbose)
+        form_analyzer = FormAnalyzerAgent(llm=llm, verbose=verbose)
         
         # Analyze form
         with diagnostics_manager.track_stage("form_analysis"):
@@ -166,17 +203,22 @@ async def test_discord_application(args):
             
             # Get page HTML and analyze structure
             page_html = await browser_manager.get_page_html()
-            form_structure = await form_analyzer.analyze_form_with_browser(browser_manager, url, args.visible)
+            
+            # Create a dictionary with just the main frame for analysis
+            main_frame = browser_manager.page.main_frame
+            frames_dict = {"main": main_frame}
+            
+            form_structure = await form_analyzer.analyze_form_with_browser(browser_manager, url, frames_dict)
             
             # Save form structure
             with open(os.path.join(results_dir, "form_structure.json"), "w") as f:
                 json.dump(form_structure, f, indent=2)
         
-        # Create user profile
-        user_profile = create_test_profile()
+        # Load comprehensive user profile from test_user directory
+        user_profile = load_user_profile()
         
         # Create profile adapter agent
-        profile_adapter = ProfileAdapterAgent(llm=llm, verbose=args.verbose)
+        profile_adapter = ProfileAdapterAgent(llm=llm, verbose=verbose)
         
         # Map profile to form
         with diagnostics_manager.track_stage("profile_mapping"):
@@ -185,132 +227,175 @@ async def test_discord_application(args):
             # Map user profile to form fields
             profile_mapping = await profile_adapter.adapt_profile(
                 user_profile=user_profile,
-                form_structure=form_structure
+                form_elements=form_structure
             )
             
             # Save profile mapping
             with open(os.path.join(results_dir, "profile_mapping.json"), "w") as f:
-                json.dump(profile_mapping, f, indent=2)
+                json.dump([action.__dict__ for action in profile_mapping], f, indent=2)
         
         # Execute form filling
         with diagnostics_manager.track_stage("form_execution"):
             logger.info("Executing form filling")
             
             # If requested to slow down for visibility
-            if args.visible and args.slow:
+            if visible and slow:
                 logger.info("Using slow execution mode for better visibility")
                 
+                # Create form interaction and element selector with browser manager
+                element_selector = ElementSelector(browser_manager, diagnostics_manager)
+                form_interaction = FormInteraction(browser_manager, element_selector, diagnostics_manager)
+                
                 # Create action executor with test_mode OFF to actually interact with the browser
-                action_executor = ActionExecutor(browser_manager=browser_manager)
+                action_executor = ActionExecutor(
+                    browser_manager=browser_manager, 
+                    diagnostics_manager=diagnostics_manager,
+                    form_interaction=form_interaction,
+                    element_selector=element_selector
+                )
                 action_executor.set_test_mode(False)  # Set to False to actually interact with the browser
                 
-                # Initialize application executor agent
-                application_executor = ApplicationExecutorAgent(action_executor=action_executor)
-                
-                # Extract field mappings
-                field_mappings = profile_mapping.get("field_mappings", [])
+                # The profile_mapping is already a list of ActionContext objects
                 field_results = []
                 fields_filled = 0
+                fields_failed = 0 # Initialize failed count
+                field_type_stats = {} # Initialize stats
                 
-                # Process each field manually with delays
-                for field_mapping in field_mappings:
-                    field_id = field_mapping.get("field_id")
-                    value = field_mapping.get("value", "")
+                # Process each action context with delays
+                for action_context in profile_mapping:
+                    field_id = action_context.field_id
+                    field_type = action_context.field_type
+                    value = action_context.field_value
+                    frame_id = action_context.frame_id
+                    fallback_text = action_context.fallback_text
+                    
+                    # Format the field_id as a CSS selector if it isn't already
+                    if field_id and not field_id.startswith(('#', '.')):
+                        field_id = f"#{field_id}"
+                        # Update the action_context with the new field_id
+                        action_context.field_id = field_id
+                    
+                    # Check if this is a typeahead field (for better handling)
+                    if field_type == "select" or field_type == "dropdown":
+                        # Convert select/dropdown fields to typeahead for education/location fields
+                        is_typeahead = any(keyword in str(field_id).lower() for keyword in [
+                            "school", "degree", "discipline", "location", "university",
+                            "education", "city", "state", "country"
+                        ])
+                        if is_typeahead:
+                            logger.info(f"Converting field '{field_id}' from '{field_type}' to 'typeahead' for better handling")
+                            field_type = "typeahead"
+                            action_context.field_type = "typeahead"
                     
                     # Skip empty fields or recaptcha
-                    if not field_id or "recaptcha" in field_id.lower():
+                    if (not field_id and field_type != "click") or "recaptcha" in str(field_id).lower():
+                        logger.debug(f"Skipping field: {field_id or fallback_text} (Type: {field_type})")
                         continue
-                    
-                    # Get field type 
-                    field_type = application_executor._get_field_type(field_id, form_structure)
-                    
-                    # Ensure element is visible by scrolling to it
-                    if hasattr(browser_manager, 'scroll_to_element'):
-                        selector = f"#{field_id}"
-                        # Use sanitized selector for fields with numeric IDs
-                        if field_id.isdigit() or (field_id and field_id[0].isdigit()):
-                            selector = f"[id='{field_id}']"
-                            
-                        await browser_manager.scroll_to_element(selector)
-                        await asyncio.sleep(0.5)  # Pause after scrolling
-                    
-                    # Execute the field
-                    result = await application_executor._execute_field(field_id, field_type, value, form_structure)
-                    
-                    if result.get("success", False):
-                        fields_filled += 1
+
+                    # Update stats count for this type
+                    if field_type not in field_type_stats:
+                        field_type_stats[field_type] = {"total": 0, "success": 0}
+                    field_type_stats[field_type]["total"] += 1
                         
-                    field_results.append({
-                        "field_id": field_id,
-                        "field_type": field_type,
-                        "success": result.get("success", False),
-                        "value": value,
-                        "error": result.get("error", "")
-                    })
+                    logger.info(f"Processing field: {field_id or fallback_text} (Type: {field_type}) with value: {str(value)[:50]}...")
                     
-                    # Add delay between actions
-                    await asyncio.sleep(1.0)
+                    # Execute the action using ActionExecutor
+                    try:
+                        success = await action_executor.execute_action(action_context)
+                        field_result = {
+                            "field_id": field_id or fallback_text,
+                            "field_type": field_type,
+                            "value": value,
+                            "success": success,
+                            "error": None
+                        }
+                        if success:
+                            fields_filled += 1
+                            field_type_stats[field_type]["success"] += 1
+                        else:
+                            fields_failed += 1
+                            field_result["error"] = f"ActionExecutor failed for {field_type}" # Basic error
+                            logger.warning(f"Failed to process field {field_id or fallback_text} (Type: {field_type})")
+                    except Exception as e:
+                        success = False
+                        fields_failed += 1
+                        field_result = {
+                            "field_id": field_id or fallback_text,
+                            "field_type": field_type,
+                            "value": value,
+                            "success": False,
+                            "error": str(e)
+                        }
+                        logger.error(f"Error processing field {field_id or fallback_text} (Type: {field_type}): {e}", exc_info=True)
+                    
+                    field_results.append(field_result)
+                    
+                    # Wait for a short period after each action
+                    await asyncio.sleep(delay)
                 
-                # Create execution results
+                # Prepare final results for slow mode
                 execution_results = {
-                    "success": True,
+                    "fields_filled": fields_filled,
+                    "fields_failed": fields_failed,
                     "field_results": field_results,
-                    "fields_filled": fields_filled
+                    "field_type_stats": field_type_stats
                 }
-            else:
-                # Use the standard execute_form function
-                execution_results = await execute_form(
-                    form_structure=form_structure,
-                    profile_mapping=profile_mapping,
-                    browser_manager=browser_manager,
-                    visible=args.visible,
-                    test_mode=False  # Set to False to actually interact with the browser
-                )
+                
+                # Print and save results
+                print_execution_results(execution_results)
+                
+                # Save results to file
+                with open(os.path.join(results_dir, "execution_results.json"), "w") as f:
+                    json.dump(execution_results, f, indent=2)
+                    
+                return execution_results
             
-            # Save execution results
-            with open(os.path.join(results_dir, "results.json"), "w") as f:
+            # Normal execution without extra delays
+            execution_results = await execute_form(
+                browser_manager=browser_manager,
+                profile_mapping=profile_mapping,
+                form_structure=form_structure,
+                test_mode=True,  # Set to True to prevent actual form submission
+                # Add missing arguments
+                llm=llm,
+                verbose=verbose,
+                output_dir=results_dir
+                # Assuming execute_form might eventually use verbose setting
+                # verbose=verbose 
+            )
+            
+            # Print and save results
+            print_execution_results(execution_results)
+            
+            # Save results to file
+            with open(os.path.join(results_dir, "execution_results.json"), "w") as f:
                 json.dump(execution_results, f, indent=2)
-        
-        # Print results
-        logger.info("Job application completed successfully (TEST MODE - No submission made)")
-        logger.info(f"Results saved to {os.path.abspath(results_dir)}")
-        
-        # Print detailed results
-        print_execution_results(execution_results)
-        
-        print(f"✅ Test completed successfully!")
-        print(f"📊 Results saved to {os.path.abspath(results_dir)}")
-        print(f"Fields filled: {execution_results.get('fields_filled', 0)}/{len(execution_results.get('field_results', []))}")
+                
+            return execution_results
     
     except Exception as e:
-        logger.error(f"Error in test: {str(e)}", exc_info=args.verbose)
-        print(f"❌ Test failed: {str(e)}")
-        return 1
+        logger.error(f"Error in test: {str(e)}")
+        raise
     
     finally:
         # Close browser
-        logger.info("Closing centralized BrowserManager.")
         with diagnostics_manager.track_stage("browser_close"):
             await browser_manager.close()
-    
-    return 0
-
-def main():
-    """Main entry point for testing Discord job application."""
-    parser = argparse.ArgumentParser(description="Test Discord Job Application")
-    parser.add_argument("--visible", action="store_true", help="Show browser during execution")
-    parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
-    parser.add_argument("--slow", action="store_true", help="Slow down execution for visibility")
-    
-    args = parser.parse_args()
-    
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-    
-    # Run the test
-    exit_code = asyncio.run(test_discord_application(args))
-    
-    sys.exit(exit_code)
 
 if __name__ == "__main__":
-    main() 
+    """Entry point for direct script execution."""
+    import asyncio
+    
+    print("Starting Discord test execution...")
+    # Run the test async function directly
+    result = asyncio.run(test_discord_application())
+    
+    # Print results
+    if result:
+        print("\n===== TEST EXECUTION COMPLETE =====")
+        print_execution_results(result)
+    else:
+        print("\n===== TEST EXECUTION FAILED =====")
+    
+    print("Test completed.")
+

@@ -12,7 +12,6 @@ from enterprise_job_agent.core.crew_manager import JobApplicationCrew
 from enterprise_job_agent.core.browser_manager import BrowserManager
 from enterprise_job_agent.core.diagnostics_manager import DiagnosticsManager
 from enterprise_job_agent.agents.session_manager_agent import SessionManagerAgent
-from enterprise_job_agent.agents.application_executor_agent import ApplicationExecutorAgent
 from enterprise_job_agent.agents.profile_adapter_agent import ProfileAdapterAgent
 
 # Create mock credentials
@@ -311,12 +310,11 @@ async def test_workflow_integration(job_application_crew):
 
     # Verify all required agents are initialized
     assert isinstance(job_application_crew.session_manager, SessionManagerAgent)
-    assert isinstance(job_application_crew.application_executor, ApplicationExecutorAgent)
     assert isinstance(job_application_crew.profile_adapter, ProfileAdapterAgent)
 
     # Verify core tools are initialized
     assert job_application_crew.action_executor is not None
-    assert job_application_crew.dropdown_matcher is not None
+    assert job_application_crew.strategy_selector is not None
 
     # Test the complete workflow
     result = await job_application_crew.execute_job_application_process(
@@ -350,29 +348,6 @@ async def test_error_handling(job_application_crew):
     assert not result["success"]
     assert "error" in result
     assert "Failed to load page" in result["error"]
-
-@pytest.mark.asyncio
-async def test_form_analysis(job_application_crew):
-    """Test that form analysis is properly performed."""
-
-    # Create a form analysis task
-    task = await job_application_crew.create_form_analysis_task(MOCK_FORM_DATA)
-
-    # Verify task creation
-    assert task is not None
-    assert task.agent == job_application_crew.agents["form_analyzer"]
-    assert task.description is not None
-    assert task.expected_output is not None
-
-    # Create and run a crew with just this task
-    crew = job_application_crew.create_crew()
-    crew.tasks = [task]
-
-    # Run the crew
-    results = await job_application_crew._run_crew_async(crew)
-
-    # Verify results
-    assert len(results) > 0
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"]) 

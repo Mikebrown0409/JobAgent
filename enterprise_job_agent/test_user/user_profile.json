@@ -8,8 +8,8 @@
       "linkedin": "https://linkedin.com/in/alexchen"
   },
   "documents": {
-      "resume": "resume.pdf",
-      "cover_letter": ""
+      "resume": "/Users/lydiabrown/Documents/Agent/enterprise_job_agent/test_user/resume.pdf",
+      "cover_letter": "/Users/lydiabrown/Documents/Agent/enterprise_job_agent/test_user/cover_letter.pdf"
   },
   "location": {
       "city": "San Francisco",

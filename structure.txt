@@ -1,89 +1,69 @@
 enterprise_job_agent/
 ├── main.py                 # Entry point and CLI interface
-├── config.py              # Configuration and environment settings
-├── agents/                # AI Agents using CrewAI
+├── config.py               # Configuration and environment settings
+├── agents/                 # AI Agents using CrewAI
 │   ├── __init__.py
 │   ├── profile_adapter_agent.py    # Adapts user profiles to job requirements
 │   ├── form_analyzer_agent.py      # Analyzes form structure and requirements
-│   ├── application_executor_agent.py # Handles application execution
+│   ├── session_manager_agent.py    # Manages session state, navigation (optional based on final design)
 │   └── error_recovery_agent.py     # Handles error recovery
-├── core/                  # Core system components
+├── core/                   # Core system components
 │   ├── __init__.py
-│   ├── action_executor.py          # Executes form actions reliably
-│   ├── application_state.py        # Manages application state and progress
-│   ├── browser_manager.py          # Manages browser sessions and frames
-│   ├── crew_manager.py             # Orchestrates AI agent interactions
+│   ├── action_executor.py          # Dispatches actions to handlers
+│   ├── action_strategy_selector.py # Selects interaction strategies using LLM
+│   ├── action_handlers/          # Handlers for specific action types
+│   │   ├── __init__.py
+│   │   ├── base_handler.py         # Base class for action handlers
+│   │   ├── text_handler.py         # Handles text input fields
+│   │   ├── select_handler.py       # Handles <select> dropdowns
+│   │   ├── typeahead_handler.py    # Handles typeahead/autocomplete fields
+│   │   ├── checkbox_handler.py     # Handles checkboxes and radio buttons
+│   │   ├── click_handler.py        # Handles click actions
+│   │   └── fileupload_handler.py   # Handles file uploads
+│   ├── browser_manager.py          # Manages browser sessions and Playwright page
+│   ├── crew_manager.py             # Orchestrates AI agent interactions and workflow
 │   ├── diagnostics_manager.py      # Tracks system performance and issues
-│   ├── field_identification_system.py  # Identifies form field types
-│   ├── frame_manager.py            # Handles iframe navigation
-│   ├── job_extractor.py           # Extracts job posting details
-│   ├── profile_manager.py         # Manages user profile data
-│   ├── rate_limiter.py           # Controls request rates
-│   └── response_cache.py         # Caches responses for efficiency
-└── tools/                 # Specialized tools and utilities
-    ├── __init__.py
-    ├── data_formatter.py          # Formats data for form submission
-    ├── dropdown_matcher.py        # Smart dropdown option matching
-    ├── element_selector.py        # Enhanced element selection
-    ├── field_identifier.py        # Form field identification
-    ├── form_interaction.py        # Form interaction utilities
-    ├── metrics_collector.py       # Collects performance metrics
-    └── report_generator.py        # Generates diagnostic reports
+│   ├── frame_manager.py            # Handles iframe identification and switching
+│   ├── job_extractor.py            # Extracts job posting details (if applicable)
+│   ├── exceptions.py             # Custom exception classes
+│   └── llm_wrapper.py            # Wrapper for LLM interaction (e.g., GeminiWrapper)
+├── tools/                  # Specialized tools and utilities used by agents/core components
+│   ├── __init__.py
+│   ├── data_formatter.py          # Formats data (e.g., for profile mapping)
+│   ├── element_selector.py        # Advanced element selection/identification
+│   ├── form_interaction.py        # Low-level Playwright interaction utilities
+│   └── field_identifier.py        # Utility for identifying field properties (used by FormAnalyzerAgent)
+├── tests/                  # Unit and integration tests
+│   ├── __init__.py
+│   ├── test_job_application.py   # Main test suite
+│   ├── test_action_handlers.py   # Tests for individual action handlers
+│   └── ... (other test files)
+├── utils/                  # General utility functions (optional)
+│   └── __init__.py
+├── run_outcomes.jsonl      # Log file for structured run results
+├── requirements.txt        # Python package dependencies
+├── README.md               # Project overview and setup instructions
+├── structure.txt           # This file - Representation of the project structure
+└── checklist.md            # Development progress checklist
 
-Component Dependencies:
----------------------
-1. Entry Point (main.py):
-   - Depends on: config.py, crew_manager.py, browser_manager.py, job_extractor.py
-
-2. Core Components:
-   - crew_manager.py:
-     ↳ Depends on: action_executor.py, browser_manager.py, diagnostics_manager.py
-     ↳ Uses agents: profile_adapter_agent.py, form_analyzer_agent.py, application_executor_agent.py
-   
-   - action_executor.py:
-     ↳ Depends on: browser_manager.py, diagnostics_manager.py
-     ↳ Uses tools: form_interaction.py, field_identifier.py, element_selector.py
-   
-   - browser_manager.py:
-     ↳ Depends on: frame_manager.py
-     ↳ Uses tools: element_selector.py
-
-3. Tools:
-   - form_interaction.py:
-     ↳ Depends on: browser_manager.py, element_selector.py
-   
-   - field_identifier.py:
-     ↳ Used by: action_executor.py, field_identification_system.py
-   
-   - metrics_collector.py, report_generator.py:
-     ↳ Used by: diagnostics_manager.py
-
-4. Agents:
-   All agents depend on crew_manager.py for orchestration
-   - profile_adapter_agent.py:
-     ↳ Uses tools: data_formatter.py
-   - form_analyzer_agent.py:
-     ↳ Uses tools: field_identifier.py
-   - application_executor_agent.py:
-     ↳ Uses: action_executor.py
-   - error_recovery_agent.py:
-     ↳ Uses: diagnostics_manager.py
+Component Dependencies (High-Level):
+-----------------------------------
+1.  **main.py**: `config`, `crew_manager`, `browser_manager`
+2.  **crew_manager.py**: Orchestrates agents (`FormAnalyzerAgent`, `ProfileAdapterAgent`, `ErrorRecoveryAgent`), `ActionExecutor`, `BrowserManager`, `DiagnosticsManager`, `LLMWrapper`.
+3.  **ActionExecutor**: Delegates to `ActionHandlers`, uses `ActionStrategySelector`, `BrowserManager`, `DiagnosticsManager`.
+4.  **Action Handlers** (`core/action_handlers/`): Inherit from `BaseActionHandler`. Use `ActionStrategySelector`, `FormInteraction`, `ElementSelector`, `BrowserManager`, `DiagnosticsManager`.
+5.  **Agents** (`agents/`): Use `LLMWrapper`, `Tools`, `DiagnosticsManager`. Depend on `CrewManager` for tasks/orchestration.
+6.  **Tools** (`tools/`): Used by Agents and Core components. Typically depend on `BrowserManager`, `ElementSelector`.
 
 Data Flow:
 ---------
-1. User initiates job application (main.py)
-2. Job data extracted (job_extractor.py)
-3. Crew manager orchestrates process:
-   a. Form analysis (form_analyzer_agent.py)
-   b. Profile mapping (profile_adapter_agent.py)
-   c. Execution planning (application_executor_agent.py)
-   d. Action execution (action_executor.py)
-4. Browser interactions handled by browser_manager.py
-5. Diagnostics and metrics collected throughout
-6. Error recovery triggered if needed
-
-Testing Files:
-------------
-- test_job_application.py  # Main test suite
-- test_discord.py         # Discord-specific tests
-- test_simple.py         # Basic functionality tests 
+1.  `main.py` initiates `CrewManager`.
+2.  `CrewManager` navigates (`BrowserManager`).
+3.  `CrewManager` invokes `FormAnalyzerAgent` (uses `ElementSelector`, `FieldIdentifier`, `LLMWrapper`).
+4.  `CrewManager` invokes `ProfileAdapterAgent` (uses analysis result, profile data, `DataFormatter`, `LLMWrapper`) -> Generates `ActionContext` list.
+5.  `CrewManager` invokes `ActionExecutor` with `ActionContext` list.
+6.  `ActionExecutor` selects handler based on `ActionContext.field_type`.
+7.  Handler potentially calls `ActionStrategySelector` (uses `LLMWrapper`) to choose method.
+8.  Handler calls `FormInteraction` or `ElementSelector` (uses `BrowserManager`) to interact with the page.
+9.  If error occurs, `CrewManager` invokes `ErrorRecoveryAgent`, attempts recovery plan via `ActionExecutor`.
+10. `CrewManager` logs outcome (`run_outcomes.jsonl`) via `DiagnosticsManager`. 

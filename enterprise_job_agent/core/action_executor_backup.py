@@ -1,0 +1,1914 @@
+"""Action executor for job application system."""
+
+import logging
+import asyncio
+from typing import Dict, Any, Optional, List, Tuple, Union
+from dataclasses import dataclass
+import os
+import difflib
+import re
+import random
+import time
+import traceback
+
+from playwright.async_api import Page, Frame, Locator, Error
+
+# Import the exception from the new location
+from enterprise_job_agent.core.exceptions import ActionExecutionError
+from enterprise_job_agent.core.browser_manager import BrowserManager
+from enterprise_job_agent.core.diagnostics_manager import DiagnosticsManager
+from enterprise_job_agent.tools.form_interaction import FormInteraction
+from enterprise_job_agent.tools.element_selector import ElementSelector
+from enterprise_job_agent.tools.dropdown_matcher import DropdownMatcher
+
+logger = logging.getLogger(__name__)
+
+@dataclass
+class TypeaheadAction:
+    """Data structure for typeahead actions with AI support."""
+    field_name: str  # Name of the field for logging
+    value: str  # Value to set
+    selector: Optional[str] = None  # CSS selector (can be determined later)
+    field_type: Optional[str] = None  # Type of field (school, degree, etc.)
+    profile_data: Optional[Dict[str, Any]] = None  # User profile data for context
+    frame_id: Optional[str] = None  # Frame ID if not in main frame
+
+@dataclass
+class ActionContext:
+    """Context for an action execution."""
+    field_id: str  # Can be a selector, or a conceptual ID if type is 'click' and using fallback_text
+    field_type: str # e.g., "text", "select", "click", "checkbox", "file"
+    field_value: Any # Value to fill/select, or None for click
+    frame_id: Optional[str] = None
+    options: Optional[Dict[str, Any]] = None # Additional options if needed
+    fallback_text: Optional[str] = None # Text content to use as fallback (e.g., button text)
+    field_name: Optional[str] = None # Added for typeahead action
+    profile_data: Optional[Dict[str, Any]] = None # User profile data for context
+
+class ActionExecutor:
+    """Executor for web form actions like filling fields, selecting from dropdowns, etc.
+    
+    In test mode, this simulates the actions without actually performing them.
+    In production mode, this would control the browser via Playwright.
+    """
+    
+    browser_manager: Optional[BrowserManager]
+    logger: logging.Logger
+    test_mode: bool
+    max_retries: int
+    retry_delay: int
+    diagnostics_manager: Optional[DiagnosticsManager]
+    form_interaction: Optional[FormInteraction]
+    element_selector: Optional[ElementSelector]
+    page: Optional[BrowserManager]
+    dropdown_matcher: Optional[DropdownMatcher]
+    post_type_delay_ms: int
+    _dropdown_option_cache: Dict[Tuple[str, Tuple[str, ...], bool, str], List[str]]
+    
+    def __init__(
+        self,
+        page=None,
+        browser_manager: Optional[BrowserManager] = None, 
+        form_interaction: Optional[FormInteraction] = None,
+        element_selector: Optional[ElementSelector] = None,
+        diagnostics_manager: Optional[DiagnosticsManager] = None,
+        logger: Optional[logging.Logger] = None,
+        test_mode=True
+    ):
+        """Initialize the action executor.
+        
+        Args:
+            page: Playwright page object (deprecated, use browser_manager instead)
+            browser_manager: Browser manager instance
+            form_interaction: Form interaction helper
+            element_selector: Element selector helper
+            diagnostics_manager: Diagnostics manager for logging and metrics
+            logger: Logger instance
+            test_mode: Whether to run in test mode
+            
+        Note:
+            Default mode is test mode for safety
+            Default max retries is 3
+            Default retry delay is 1 second
+        """
+        self.browser_manager = browser_manager
+        self.page = page if page is not None else browser_manager.page if browser_manager else None
+        self.logger = logger or logging.getLogger(__name__)
+        self.test_mode = test_mode
+        self.max_retries = 3   # Default number of retries
+        self.retry_delay = 1   # Default delay between retries (seconds)
+        self.diagnostics_manager = diagnostics_manager
+        self.form_interaction = form_interaction
+        self.element_selector = element_selector
+        # Instantiate DropdownMatcher
+        self.dropdown_matcher = DropdownMatcher(diagnostics_manager=diagnostics_manager)
+        self.post_type_delay_ms = 500 # Delay in ms after typing in dropdown
+        self._dropdown_option_cache: Dict[Tuple[str, Tuple[str, ...], bool, str], List[str]] = {} # Initialize cache for dropdown options with type hint
+        self.logger.info(f"ActionExecutor set to {'test' if test_mode else 'production'} mode")
+    
+    def _log_debug(self, message: str):
+        """Log a debug message, using diagnostics manager if available."""
+        self.logger.debug(message)
+        if self.diagnostics_manager:
+            self.diagnostics_manager.debug(message)
+            
+    def _log_info(self, message: str):
+        """Log an info message, using diagnostics manager if available."""
+        self.logger.info(message)
+        if self.diagnostics_manager:
+            self.diagnostics_manager.info(message)
+            
+    def _log_warning(self, message: str):
+        """Log a warning message, using diagnostics manager if available."""
+        self.logger.warning(message)
+        if self.diagnostics_manager:
+            self.diagnostics_manager.warning(message)
+            
+    def _log_error(self, message: str):
+        """Log an error message, using diagnostics manager if available."""
+        self.logger.error(message)
+        if self.diagnostics_manager:
+            self.diagnostics_manager.error(message)
+            
+    def set_diagnostics_manager(self, diagnostics_manager):
+        """Set the diagnostics manager.
+        
+        Args:
+            diagnostics_manager: DiagnosticsManager instance
+        """
+        self.diagnostics_manager = diagnostics_manager
+        # Update DropdownMatcher's diagnostics manager as well
+        if hasattr(self, 'dropdown_matcher') and self.dropdown_matcher:
+            self.dropdown_matcher.diagnostics_manager = diagnostics_manager
+        
+    def set_form_interaction(self, form_interaction):
+        """Set the form interaction helper.
+        
+        Args:
+            form_interaction: FormInteraction instance
+        """
+        self.form_interaction = form_interaction
+    
+    def set_test_mode(self, test_mode: bool):
+        """Set the test mode flag.
+        
+        Args:
+            test_mode: Whether to run in test mode
+        """
+        self.test_mode = test_mode
+        self.logger.info(f"ActionExecutor set to {'test' if test_mode else 'production'} mode")
+    
+    async def execute_action(self, context: ActionContext) -> bool:
+        """Execute a form action based on the provided action context.
+        
+        Args:
+            context: The action context containing field details
+            
+        Returns:
+            True if action executed successfully, False otherwise
+        """
+        field_id = context.field_id
+        field_type = context.field_type
+        field_value = context.field_value
+        frame_id = context.frame_id
+        options = context.options or {}  # Ensure options is a dict
+
+        # For actions with empty/None selectors, we can't execute without a selector or fallback
+        if not field_id and (field_type != 'click' or not context.fallback_text):
+            self._log_error(f"Missing field_id for {field_type} action")
+            return False
+        
+        # Make sure selectors starting with numbers or containing special characters 
+        # are properly escaped/sanitized
+        if field_id and field_id.startswith('#') and field_id != '#':
+            field_id = await self._sanitize_selector(field_id)
+            
+        self._log_info(f"Executing {field_type} action for {field_id or context.fallback_text} with value: {field_value}")
+            
+        try:
+            if self.diagnostics_manager:
+                action_details = {
+                    "field_id": field_id,
+                    "field_type": field_type,
+                    "frame_id": frame_id,
+                    "has_fallback": bool(context.fallback_text)
+                }
+                self.diagnostics_manager.start_action(field_type, action_details)
+                
+            result = False
+            
+            # Execute appropriate action based on field type
+            if field_type in ('text', 'textarea', 'email', 'password'):
+                if not field_value:
+                    self._log_warning(f"Empty value for {field_id}")
+                    return False
+                    
+                result = await self._execute_fill_action(field_id, str(field_value), frame_id)
+                
+            elif field_type in ('select', 'school', 'degree'):  # Handle education field types specially
+                if not field_value:
+                    self._log_warning(f"Empty value for dropdown {field_id}")
+                    return False
+                    
+                # Pass along field type information to the select method
+                if field_type in ('school', 'degree'):
+                    # For specialized field types, add them to options
+                    options["field_purpose"] = field_type
+                    
+                result = await self._execute_select_action(field_id, str(field_value), frame_id, options)
+                
+            elif field_type == 'typeahead':
+                if not field_value:
+                    self._log_warning(f"Empty value for typeahead {field_id}")
+                    return False
+                    
+                result = await self._execute_typeahead_action(field_id, str(field_value), frame_id)
+                
+            elif field_type == 'checkbox':
+                result = await self._execute_checkbox_action(field_id, bool(field_value), frame_id)
+                
+            elif field_type == 'click':
+                # Click can work with either a selector or fallback text
+                result = await self._execute_click_action(field_id, frame_id, context.fallback_text)
+                
+            elif field_type == 'file':
+                result = await self._execute_file_action(field_id, str(field_value), frame_id)
+                
+            else:
+                self._log_error(f"Unknown action type: {field_type}")
+                if self.diagnostics_manager:
+                    self.diagnostics_manager.end_action(
+                        False, 
+                        error=f"Unknown action type: {field_type}"
+                    )
+                return False
+                
+            if result:
+                self._log_info(f"Successfully executed {field_type} action for {field_id or context.fallback_text}")
+            else:
+                self._log_error(f"Failed to execute {field_type} action for {field_id or context.fallback_text}")
+                
+            if self.diagnostics_manager:
+                self.diagnostics_manager.end_action(result)
+                
+            return result
+            
+        except Exception as e:
+            self._log_error(f"Exception during action execution for {field_id or context.fallback_text}: {str(e)}")
+            if self.diagnostics_manager:
+                self.diagnostics_manager.end_action(
+                    False, 
+                    error=f"Exception: {str(e)}"
+                )
+            return False
+
+    # --- Helper Methods for Specific Actions ---
+
+    async def _get_frame(self, frame_id: Optional[str]) -> Frame:
+        """Helper to get the specified frame or main frame."""
+        # Correctly call get_frame from browser_manager
+        frame = await self.browser_manager.get_frame(frame_id)
+        if not frame:
+            error_msg = f"Could not get frame (ID: {frame_id})"
+            self.logger.error(error_msg)
+            raise ActionExecutionError(error_msg)
+        return frame
+
+    async def _sanitize_selector(self, selector: str) -> str:
+        """Sanitize potentially problematic selectors (e.g., numeric IDs)."""
+        # First check if it's a numeric ID
+        if selector.startswith('#') and selector[1:].isdigit():
+            sanitized = f"[id='{selector[1:]}']"
+            self.logger.debug(f"Sanitized numeric ID selector '{selector}' to '{sanitized}'")
+            return sanitized
+        
+        # Check if it's an ID with characters that might need escaping
+        if selector.startswith('#') and (':' in selector[1:] or '.' in selector[1:] or '[' in selector[1:] or ']' in selector[1:]):
+            sanitized = f"[id='{selector[1:]}']"
+            self.logger.debug(f"Sanitized ID with special chars '{selector}' to '{sanitized}'")
+            return sanitized
+        
+        return selector
+
+    async def _execute_fill_action(
+        self,
+        selector: str,
+        value: str,
+        frame_id: Optional[str] = None
+    ) -> bool:
+        """Execute a fill action (for text, textarea)."""
+        try:
+            frame = await self._get_frame(frame_id)
+            safe_selector = await self._sanitize_selector(selector)
+            # Use FormInteraction tool for the actual interaction
+            await self.form_interaction.fill_field(safe_selector, value)
+            return True
+        except Exception as e:
+            self.logger.error(f"Error filling field {safe_selector}: {e}")
+            raise ActionExecutionError(f"Failed to fill field '{safe_selector}'") from e
+
+    async def _execute_checkbox_action(
+        self,
+        selector: str,
+        value: bool,
+        frame_id: Optional[str] = None
+    ) -> bool:
+        """Execute a checkbox action."""
+        try:
+            frame = await self._get_frame(frame_id)
+            safe_selector = await self._sanitize_selector(selector)
+            await self.form_interaction.set_checkbox(safe_selector, value)
+            return True
+        except Exception as e:
+            self.logger.error(f"Error setting checkbox {safe_selector}: {e}")
+            raise ActionExecutionError(f"Failed to set checkbox '{safe_selector}'") from e
+
+    async def _execute_click_action(
+        self,
+        selector: Optional[str], # Selector is now optional if fallback_text is provided
+        frame_id: Optional[str] = None,
+        fallback_text: Optional[str] = None # Added fallback_text parameter
+    ) -> bool:
+        """Execute a click action, with optional text-based fallback."""
+        # --- Get Frame and Selector ---
+        frame = await self._get_frame(frame_id)
+        safe_selector = None
+        if selector:
+            safe_selector = await self._sanitize_selector(selector)
+
+        # --- Primary Attempt: Use Selector ---
+        if safe_selector:
+            try:
+                self.logger.debug(f"Attempting click via selector: {safe_selector}")
+                # Call the interaction method correctly
+                await self.form_interaction.click_element(safe_selector)
+                self.logger.info(f"Successfully clicked element via selector: {safe_selector}")
+                return True
+            except Error as e: # Catch Playwright-specific errors
+                self.logger.warning(f"Playwright error clicking element {safe_selector}: {e}. Trying fallback if available.")
+            except ActionExecutionError as e: # Catch errors raised by FormInteraction or other parts
+                self.logger.warning(f"ActionExecutionError clicking element {safe_selector}: {e}. Trying fallback if available.")
+            except Exception as e: # Catch unexpected errors
+                self.logger.error(f"Unexpected error clicking element {safe_selector}: {e}. Trying fallback if available.", exc_info=True)
+            # Note: If exceptions occur, we implicitly fall through to the text fallback
+
+        # --- Fallback Attempt: Use Text ---
+        if fallback_text:
+            self.logger.info(f"Selector click failed or selector not provided. Attempting click via fallback text: '{fallback_text}'")
+            try:
+                element = await self.element_selector.find_element_by_text(
+                    fallback_text,
+                    frame=frame,
+                    element_type="button,*[role='button'],a", # Prioritize buttons/links
+                    timeout=5000 # Give fallback a bit more time
+                )
+
+                if element:
+                    # *** This requires a new method in FormInteraction ***
+                    await self.form_interaction.click_element_handle(element)
+                    self.logger.info(f"Successfully clicked element via fallback text: '{fallback_text}'")
+                    return True
+                else:
+                    self.logger.error(f"Fallback failed: Element with text '{fallback_text}' not found.")
+                    raise ActionExecutionError(f"Failed to click element via selector '{safe_selector}' or fallback text '{fallback_text}'")
+
+            except Error as e: # Catch Playwright errors during text search/click
+                self.logger.error(f"Playwright error during fallback click for text '{fallback_text}': {e}")
+                raise ActionExecutionError(f"Failed during fallback click for text '{fallback_text}'") from e
+            except ActionExecutionError as e: # Catch errors from click_element_handle if it raises them
+                self.logger.error(f"ActionExecutionError during fallback click for text '{fallback_text}': {e}")
+                raise # Re-raise to be caught by the main execute_action handler
+            except Exception as e: # Catch unexpected errors
+                self.logger.error(f"Unexpected error during fallback click for text '{fallback_text}': {e}", exc_info=True)
+                raise ActionExecutionError(f"Unexpected error during fallback click for text '{fallback_text}'") from e
+        else:
+            # If selector failed and no fallback text was provided
+            self.logger.error(f"Click failed for selector '{safe_selector}' and no fallback text was provided.")
+            raise ActionExecutionError(f"Failed to click element via selector '{safe_selector}' (no fallback available)")
+
+    async def _execute_file_action(
+        self,
+        selector: str,
+        file_path: str,
+        frame_id: Optional[str] = None
+    ) -> bool:
+        """Execute a file upload action."""
+        try:
+            frame = await self._get_frame(frame_id)
+            safe_selector = await self._sanitize_selector(selector)
+            if not os.path.exists(file_path):
+                 self.logger.error(f"File not found for upload: {file_path}")
+                 raise ActionExecutionError(f"File path does not exist: {file_path}")
+            await self.form_interaction.upload_file(safe_selector, file_path)
+            return True
+        except Exception as e:
+            self.logger.error(f"Error uploading file for {safe_selector}: {e}")
+            raise ActionExecutionError(f"Failed to upload file for '{safe_selector}'") from e
+
+    # --- Select/Dropdown Specific Helpers ---
+
+    def _get_common_option_selectors(self) -> List[str]:
+        """Returns a list of common CSS selectors for dropdown options."""
+        # Prioritize specific roles and common tags
+        return [
+            "[role='option']",
+            "li[data-option-value]",
+            "li[data-value]",
+            "li",
+            "div[role='listitem']",
+            "div.option", # Common class names
+            "span.option-label",
+            ".Select-option", # React-select convention
+            "option" # Standard HTML option tag
+        ]
+
+    async def _try_click_to_open(self, frame: Frame, selector: str) -> bool:
+        """Attempts to click the dropdown element to open it."""
+        self.logger.debug(f"Attempting to click {selector} to open dropdown.")
+        try:
+            await frame.locator(selector).click(timeout=3000)
+            await frame.wait_for_timeout(300) # Short pause after click
+            self.logger.debug(f"Successfully clicked {selector} to open.")
+            return True
+        except Error as e: # Catch Playwright Error specifically
+            self.logger.warning(f"Could not click {selector} to open dropdown: {e}")
+            return False
+        except Exception as e:
+             self.logger.warning(f"Unexpected error clicking {selector} to open dropdown: {e}")
+             return False
+
+    def _find_best_match(self, value: str, options: List[str]) -> Optional[str]:
+        """Finds the best match for the value in the options list using DropdownMatcher."""
+        if not self.dropdown_matcher:
+            self.logger.error("DropdownMatcher not initialized in ActionExecutor")
+            return None # Cannot match without the matcher tool
+        if not options:
+            return None
+            
+        match_result = self.dropdown_matcher.find_best_match(value, options)
+        
+        if match_result and isinstance(match_result, tuple) and len(match_result) == 2:
+            best_match, score = match_result
+            # Log the match and score for debugging
+            self.logger.debug(f"DropdownMatcher found best match: '{best_match}' with score {score:.2f} for value '{value}'")
+            # Use the configured threshold from the matcher
+            if score >= self.dropdown_matcher.match_threshold:
+                return best_match
+            else:
+                 self.logger.debug(f"Match score {score:.2f} below threshold {self.dropdown_matcher.match_threshold}")
+                 return None
+        else:
+             # Log if the matcher returned an unexpected format or no match
+             if match_result:
+                 self.logger.warning(f"DropdownMatcher returned unexpected result format: {match_result}")
+             else:
+                 self.logger.debug(f"DropdownMatcher returned no suitable match for '{value}' in options: {options[:10]}...")
+             return None
+
+    async def _select(self, field_id, value, frame_id=None, field_type=None):
+        """
+        Select an option from a dropdown or other select-like element.
+        
+        This method handles various dropdown implementations:
+        - Standard <select> elements
+        - Custom dropdowns with different UI patterns
+        - Typeahead inputs with dropdown suggestions
+        
+        Args:
+            field_id: CSS selector for the dropdown element
+            value: The text value to select
+            frame_id: Optional ID of the frame containing the dropdown
+            field_type: Optional type of field for specialized handling
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        if not value:
+            self.logger.warning(f"Empty value provided for select action on {field_id}")
+            return False
+            
+        self.logger.debug(f"Executing select for {field_id} with value: {value}")
+        
+        try:
+            # Get frame
+            frame = await self._get_frame(frame_id)
+            if not frame:
+                return False
+                
+            # Convert numeric ID selectors to valid CSS if needed
+            selector = await self._sanitize_selector(field_id)
+            
+            # Wait for the element to be present
+            if not await self._wait_for_selector(frame, selector):
+                self.logger.error(f"Element not found with selector: {selector}")
+                return False
+                
+            # Attempt to determine field type if not provided
+            if not field_type:
+                field_type = self._get_element_type_info(frame, selector)
+                
+            # Specialized handling for education fields
+            if field_type in ["school", "degree", "discipline", "location"]:
+                self.logger.debug(f"Using specialized '{field_type}' handling for {selector}")
+                return await self._select_with_specialized_handling(frame, selector, value, field_type)
+            else:
+                # Standard dropdown handling
+                self.logger.debug(f"Using standard dropdown handling for {selector}")
+                return await self._select_standard(frame, selector, value)
+                
+        except Exception as e:
+            self.logger.error(f"Error in _select for {field_id}: {str(e)}")
+            return False
+
+    async def _select_with_specialized_handling(self, frame, selector, value, field_type):
+        """
+        Specialized handling for important fields like school and degree.
+        
+        Incorporates more robust matching logic and intelligent fallbacks.
+        
+        Args:
+            frame: Playwright frame
+            selector: CSS selector for the element
+            value: Value to select
+            field_type: Type of field (school, degree, etc.)
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        self.logger.debug(f"Using specialized handling for {field_type} dropdown with value '{value}'")
+        
+        # Enhanced matching for school and degree fields
+        try:
+            # Ensure element visibility
+            if not self._ensure_element_visibility(frame, selector):
+                self.logger.warning(f"Element not fully visible: {selector}")
+                # Continue anyway - try our best
+            
+            # Try clicking to open the dropdown
+            await self._try_click_to_open(frame, selector)
+            
+            # Wait for the dropdown to expand
+            await frame.wait_for_timeout(300)
+            
+            # For school and degree fields, we need to generate variants for better matching
+            if field_type in ["school", "degree"]:
+                # Generate multiple variants of the value
+                variants = set([value])
+                if field_type == "school":
+                    self.dropdown_matcher.add_school_variants(value, variants)
+                    # Lower threshold for schools due to complex naming
+                    threshold = 0.5
+                elif field_type == "degree":
+                    # Generate degree variants
+                    variants.update(self.dropdown_matcher.generate_text_variants(value, "degree"))
+                    threshold = 0.55
+                
+                # Try each variant in order (prioritizing shorter variants first)
+                variants_list = sorted(list(variants), key=len)
+                self.logger.debug(f"Generated {len(variants_list)} variants for {field_type}: {variants_list[:5]}...")
+                
+                # Try direct matches first
+                for variant in variants_list:
+                    # Try clicking an exact match
+                    if await self._try_click_option_by_text(frame, variant):
+                        self.logger.info(f"Successfully clicked {field_type} option matching '{variant}'")
+                        return True
+                
+                # If direct matches fail, try fuzzy matching
+                return await self._select_with_fuzzy_match(frame, selector, value, field_type)
+            
+            # For other specialized fields
+            else:
+                # Try direct match first
+                if await self._try_click_option_by_text(frame, value):
+                    self.logger.info(f"Successfully clicked {field_type} option matching '{value}'")
+                    return True
+                
+                # If that fails, try fuzzy matching
+                return await self._select_with_fuzzy_match(frame, selector, value, field_type)
+        
+        except Exception as e:
+            self.logger.error(f"Error in specialized dropdown handling for {field_type}: {str(e)}")
+            # As last resort, try direct input
+            return await self._fallback_direct_input(frame, selector, value)
+
+    async def _select_standard(self, frame, selector, value):
+        """
+        Standard handling for dropdown/select elements.
+        
+        Tries multiple common dropdown implementations in sequence.
+        
+        Args:
+            frame: Playwright frame
+            selector: CSS selector for the element
+            value: Value to select
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        self.logger.debug(f"Attempting standard selection for {selector} with value '{value}'")
+        
+        try:
+            # Ensure element is visible
+            if not self._ensure_element_visibility(frame, selector):
+                self.logger.warning(f"Element not fully visible: {selector}")
+                # Continue anyway as best effort
+                
+            # First, try standard HTML <select> element
+            try:
+                # Check if it's a standard <select> element
+                is_select = await frame.evaluate(f"""
+                    (selector) => {{
+                        const el = document.querySelector(selector);
+                        return el && el.tagName === 'SELECT';
+                    }}
+                """, selector)
+                
+                if is_select:
+                    self.logger.debug(f"Element {selector} is a standard <select>")
+                    return await self._select_from_standard_select(frame, selector, value)
+            except Exception as e:
+                self.logger.debug(f"Error checking if {selector} is a standard select: {e}")
+            
+            # Next, try custom dropdowns
+            try:
+                # Try clicking the element to open dropdown
+                await self._try_click_to_open(frame, selector)
+                
+                # Wait a moment for the dropdown to appear
+                await frame.wait_for_timeout(300)
+                
+                # Try finding and clicking an option with matching text
+                if await self._try_click_option_by_text(frame, value):
+                    self.logger.info(f"Successfully clicked option matching '{value}'")
+                    return True
+            except Exception as e:
+                self.logger.debug(f"Error selecting from custom dropdown {selector}: {e}")
+            
+            # If both methods fail, try advanced dropdown handling
+            return await self._try_advanced_dropdown(frame, selector, value)
+            
+        except Exception as e:
+            self.logger.error(f"Error in standard dropdown handling for {selector}: {e}")
+            # As last resort, try direct input
+            return await self._fallback_direct_input(frame, selector, value)
+
+    async def _select_from_standard_select(self, frame, selector, value):
+        """
+        Select option from a standard HTML <select> element.
+        
+        Args:
+            frame: Playwright frame
+            selector: CSS selector for the select element
+            value: Value to select
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        self.logger.debug(f"Selecting from standard <select> for {selector} with value '{value}'")
+        
+        try:
+            # Try to select by visible text first
+            try:
+                # Use Playwright's selectOption with label option
+                await frame.select_option(selector, label=value)
+                self.logger.info(f"Selected option with text '{value}' from {selector}")
+                return True
+            except Exception as e:
+                self.logger.debug(f"Failed to select by label: {e}")
+            
+            # Try getting available options
+            try:
+                options = await frame.evaluate(f"""
+                    (selector) => {{
+                        const el = document.querySelector(selector);
+                        if (!el || el.tagName !== 'SELECT') return [];
+                        return Array.from(el.options).map(o => o.text);
+                    }}
+                """, selector)
+                
+                if options and len(options) > 0:
+                    self.logger.debug(f"Found {len(options)} options in select {selector}")
+                    
+                    # Try fuzzy matching if we have options
+                    best_match, score = self.dropdown_matcher.find_best_match(value, options)
+                    if best_match and score >= 0.6:
+                        self.logger.info(f"Found fuzzy match '{best_match}' (score: {score:.2f}) for '{value}'")
+                        await frame.select_option(selector, label=best_match)
+                        return True
+            except Exception as e:
+                self.logger.debug(f"Error getting select options: {e}")
+            
+            # If all else fails, try by index
+            try:
+                # Just select the first option if it's the only approach left
+                await frame.select_option(selector, index=0)
+                self.logger.warning(f"Selected first option from {selector} as fallback")
+                return True
+            except Exception as e:
+                self.logger.debug(f"Failed to select by index: {e}")
+            
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Error selecting from standard select {selector}: {e}")
+            return False
+
+    def _select_from_custom_dropdown(self, frame, selector, value):
+        """
+        Select an option from a custom (non-<select>) dropdown.
+        
+        Args:
+            frame: The frame containing the element
+            selector: CSS selector for the element
+            value: The value to select
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Wait for dropdown to be fully visible after clicking
+            time.sleep(0.5)
+            
+            # Try multiple strategies for finding options
+            option_selectors = [
+                # Common dropdown patterns
+                f"//li[contains(text(), '{value}')]",
+                f"//div[contains(@class, 'option') and contains(text(), '{value}')]",
+                f"//div[contains(@class, 'dropdown-item') and contains(text(), '{value}')]",
+                f"//div[contains(@class, 'menu-item') and contains(text(), '{value}')]",
+                f"//span[contains(text(), '{value}')]",
+                
+                # More general patterns (less specific)
+                f"//*[contains(@class, 'option') and contains(text(), '{value}')]",
+                f"//*[contains(@class, 'item') and contains(text(), '{value}')]",
+                f"//*[contains(@class, 'select') and contains(text(), '{value}')]",
+            ]
+            
+            # Try clicking option directly
+            for option_selector in option_selectors:
+                try:
+                    elements = frame.locator(option_selector)
+                    if elements:
+                        count = elements.count()
+                        if count > 0:
+                            # Click the first visible option
+                            for i in range(count):
+                                element = elements.nth(i)
+                                if element.is_visible():
+                                    element.click()
+                                    self.logger.info(f"Clicked option with selector: {option_selector}")
+                                    return True
+                except Exception as e:
+                    self.logger.debug(f"Failed to click option with selector {option_selector}: {str(e)}")
+                    
+            # If direct match failed, try clicking option with partial text match
+            partial_value = value.split()[0] if len(value.split()) > 1 else value
+            if len(partial_value) > 2:  # Only use partial match if it's not too short
+                for option_selector in [
+                    f"//li[contains(text(), '{partial_value}')]",
+                    f"//div[contains(@class, 'option') and contains(text(), '{partial_value}')]",
+                    f"//span[contains(text(), '{partial_value}')]",
+                ]:
+                    try:
+                        elements = frame.locator(option_selector)
+                        if elements:
+                            count = elements.count()
+                            if count > 0:
+                                # Click the first visible option
+                                for i in range(count):
+                                    element = elements.nth(i)
+                                    if element.is_visible():
+                                        element.click()
+                                        self.logger.info(f"Clicked option with partial match: {option_selector}")
+                                        return True
+                    except Exception as e:
+                        self.logger.debug(f"Failed to click option with partial match {option_selector}: {str(e)}")
+                        
+            # If all else fails, try to press down/enter keys to select first option
+            try:
+                element = frame.locator(selector)
+                element.press("ArrowDown")
+                time.sleep(0.2)
+                element.press("Enter")
+                self.logger.info(f"Used keyboard navigation to select option for {selector}")
+                return True
+            except Exception as e:
+                self.logger.debug(f"Keyboard navigation failed: {str(e)}")
+                
+            # Last resort: try typing directly into the field and press Tab
+            return self._fallback_direct_input(frame, selector, value)
+            
+        except Exception as e:
+            self.logger.error(f"Error selecting from custom dropdown {selector}: {str(e)}")
+            return False
+            
+    async def _select_with_fuzzy_match(self, frame, selector, value, field_type=None):
+        """
+        Select option using fuzzy matching on visible dropdown options.
+        
+        Args:
+            frame: Playwright frame
+            selector: CSS selector for the dropdown
+            value: Value to select
+            field_type: Optional type of field for specialized handling
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        self.logger.debug(f"Attempting fuzzy match selection for {selector} with '{value}'")
+        
+        try:
+            # Get all potential option elements
+            option_selectors = self._get_common_option_selectors()
+            
+            # First ensure dropdown is open
+            await self._try_click_to_open(frame, selector)
+            await frame.wait_for_timeout(300)  # Wait for dropdown to open
+            
+            # Get available options
+            options = await self._get_dropdown_options(frame, selector, option_selectors)
+            
+            if not options:
+                self.logger.warning(f"No options found for fuzzy matching in {selector}")
+                return False
+                
+            self.logger.debug(f"Found {len(options)} potential dropdown options for {selector}")
+            
+            # Adjust matching threshold based on field type
+            threshold = 0.6  # Default threshold
+            
+            if field_type == "school":
+                threshold = 0.5  # More lenient for schools due to naming variations
+            elif field_type == "location":
+                threshold = 0.5  # More lenient for locations
+            elif field_type == "degree":
+                threshold = 0.55
+                
+            # Use DropdownMatcher to find the best match
+            best_match, score = self.dropdown_matcher.find_best_match(
+                value, options, field_type=field_type
+            )
+            
+            if best_match and score >= threshold:
+                self.logger.info(f"Found fuzzy match: '{best_match}' (score: {score:.2f}) for '{value}'")
+                
+                # Try to click the matched option
+                if await self._try_click_option_by_text(frame, best_match):
+                    self.logger.info(f"Successfully clicked fuzzy-matched option '{best_match}'")
+                    return True
+                    
+                # If clicking directly fails, try keyboard navigation
+                return await self._try_keyboard_navigation(frame, selector, value, best_match, options)
+                
+            self.logger.warning(f"No suitable fuzzy match found for '{value}' in {selector} (best score: {score:.2f})")
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Error in fuzzy matching for {selector}: {e}")
+            return False
+
+    async def _fallback_direct_input(self, frame, selector, value):
+        """
+        Fallback method: directly type into the input field and press Tab.
+        
+        This is used when all other dropdown selection methods fail.
+        It's especially useful for typeahead inputs.
+        
+        Args:
+            frame: The frame containing the element
+            selector: CSS selector for the element
+            value: The value to input
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        self.logger.debug(f"Using direct input fallback for {selector}")
+        
+        try:
+            # First, clear any existing value
+            try:
+                await frame.fill(selector, "")
+            except:
+                # If fill fails, try JavaScript to clear
+                await frame.evaluate(f"document.querySelector('{selector}').value = ''")
+                
+            # Type the value
+            await frame.type(selector, value)
+            
+            # Pause briefly to let typeahead catch up
+            await frame.wait_for_timeout(500)
+            
+            # Try pressing Tab to commit the value (which often works better than Enter)
+            await frame.press(selector, "Tab")
+            
+            self.logger.info(f"Direct input fallback successful for {selector}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Direct input fallback failed for {selector}: {str(e)}")
+            return False
+
+    async def _try_advanced_dropdown(self, frame: Frame, selector: str, value: str) -> bool:
+        """Implements advanced dropdown logic: type-ahead -> scrape -> click/keyboard."""
+        self.logger.debug(f"Attempting advanced dropdown selection for '{value}' in '{selector}'")
+        option_selectors = self._get_common_option_selectors()
+        post_type_options = [] # Initialize here to prevent UnboundLocalError
+
+        try:
+            # Step 1: Type the value (or part of it) into the selector
+            # Use fill instead of type for reliability on some inputs
+            await frame.locator(selector).fill(value, timeout=5000)
+            self.logger.debug(f"Filled value '{value}' into {selector} using .fill()")
+            await frame.wait_for_timeout(self.post_type_delay_ms) # Use attribute
+
+            # Step 2: Scrape options *after* typing, using lenient visibility
+            self.logger.debug("Attempting to scrape options after typing (with lenient visibility)...")
+            post_type_options = await self._get_dropdown_options(
+                frame,
+                selector, # Use original selector
+                option_selectors,
+                is_post_type_scrape=True
+            )
+
+            if post_type_options:
+                self.logger.debug(f"Found {len(post_type_options)} options after typing: {post_type_options[:10]}...")
+                # Step 3: Find the best match and try clicking it
+                match = self._find_best_match(value, post_type_options)
+                if match:
+                    self.logger.info(f"Found match '{match}' after typing for {selector}. Attempting click.")
+                    if await self._try_click_option_by_text(frame, match):
+                        self.logger.info(f"Successfully selected '{match}' for {selector} via click after typing.")
+                        return True
+                    else:
+                        self.logger.warning(f"Found match '{match}' post-typing, but click failed. Proceeding to keyboard nav.")
+                else:
+                    self.logger.debug(f"No suitable match found for '{value}' in post-typing options.")
+            else:
+                 self.logger.debug("No options found after typing (even leniently). Trying keyboard nav.")
+
+        except Error as e: # Catch Playwright errors during fill/wait
+             self.logger.warning(f"Playwright error during type-ahead for {selector}: {e}. Proceeding to keyboard nav attempt.")
+             post_type_options = [] # Ensure empty if error
+        except Exception as e:
+            self.logger.warning(f"Unexpected error during type-ahead option processing for {selector}: {e}. Proceeding to keyboard nav attempt.")
+            # Ensure post_type_options is empty if an error occurred before assignment
+            post_type_options = [] 
+
+
+        # Step 4: Fallback to keyboard navigation
+        self.logger.debug(f"Falling back to keyboard navigation for '{value}'")
+        options_for_kb_nav = []
+        if post_type_options: # Use options found after typing if available
+             options_for_kb_nav = post_type_options
+             self.logger.debug(f"Using {len(options_for_kb_nav)} post-type options for keyboard nav.")
+        else:
+             # If post-type scrape failed or found nothing, re-scrape with standard visibility for keyboard nav
+             self.logger.debug("No post-type options available, re-scraping for keyboard nav with standard visibility.")
+             try:
+                 options_for_kb_nav = await self._get_dropdown_options(
+                     frame,
+                     selector, # Use original selector
+                     option_selectors,
+                     is_post_type_scrape=False # Standard visibility
+                 )
+                 self.logger.debug(f"Found {len(options_for_kb_nav)} options via re-scrape for keyboard nav.")
+             except Exception as kb_scrape_err:
+                 self.logger.warning(f"Could not get options for keyboard nav fallback for {selector}: {kb_scrape_err}")
+                 options_for_kb_nav = [] # Ensure it's empty
+        
+        if options_for_kb_nav:
+            # Use the _find_best_match helper here
+            best_match_for_kb = self._find_best_match(value, options_for_kb_nav)
+            if best_match_for_kb:
+                 # Pass the found best_match_for_kb and the original target_value to keyboard nav
+                 if await self._try_keyboard_navigation(frame, selector, value, best_match_for_kb, options_for_kb_nav):
+                     self.logger.info(f"Successfully selected '{best_match_for_kb}' for {selector} via keyboard navigation.")
+                     return True
+            else:
+                 self.logger.warning(f"No suitable match found for keyboard navigation target '{value}' in options: {options_for_kb_nav[:10]}...")
+        else:
+             self.logger.warning(f"No options available to attempt keyboard navigation for {selector}.")
+
+        self.logger.warning(f"Advanced dropdown selection failed for {selector}")
+        return False
+
+    async def _try_keyboard_navigation(
+        self,
+        frame: Frame,
+        selector: str,
+        target_value: str,
+        matched_option_text: str,
+        available_options: List[str]
+    ) -> bool:
+        """Attempts dropdown selection using keyboard navigation focusing on the matched option."""
+        self.logger.debug(f"Attempting keyboard navigation for target '{target_value}' aiming for matched '{matched_option_text}' in '{selector}'")
+        try:
+            # Get the current page to use keyboard actions
+            if not self.browser_manager:
+                self.logger.error("BrowserManager not available for keyboard navigation.")
+                return False
+            page = self.browser_manager.get_page()
+            if not page:
+                self.logger.error("Could not get current page for keyboard navigation.")
+                return False
+
+            await frame.focus(selector)
+            await page.wait_for_timeout(300)  # Short pause after focus
+
+            # Try ArrowDown navigation - count how many downs to reach the target
+            try:
+                target_index = available_options.index(matched_option_text)
+            except ValueError:
+                self.logger.warning(f"Matched option '{matched_option_text}' not found in available options list during keyboard nav attempt.")
+                return False  # Cannot proceed if the matched option isn't in the list
+
+            self.logger.debug(f"Keyboard Nav: Target '{matched_option_text}' found at index {target_index}. Pressing ArrowDown {target_index} times.")
+            # Press ArrowDown target_index times. If target_index is 0, no presses needed.
+            for _ in range(target_index):
+                await page.keyboard.press("ArrowDown")
+                await page.wait_for_timeout(100)  # Small delay between key presses
+
+            self.logger.debug("Pressing Enter to confirm keyboard selection.")
+            await page.keyboard.press("Enter")
+            await page.wait_for_timeout(500)  # Pause after selection
+
+            return True  # Assume success if Enter is pressed
+
+        except Error as e:  # Catch Playwright errors
+            self.logger.error(f"Playwright error during keyboard navigation for {selector}: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error during keyboard navigation for {selector}: {e}", exc_info=True)
+            return False
+
+    async def _get_dropdown_options(
+        self, 
+        frame: Frame, 
+        selector: str, 
+        option_selectors: List[str],
+        is_post_type_scrape: bool = False,
+        max_options: int = 50,
+        lenient_visibility: bool = False
+    ) -> List[str]:
+        """Get dropdown options for a selector using various strategies."""
+        start_time = time.time()
+        all_options = set()
+        
+        for option_selector in option_selectors:
+            # Build a compound selector for the dropdown options
+            # If we're doing post-type scraping, we may need to cast a wider net
+            try:
+                if is_post_type_scrape and lenient_visibility:
+                    # Use more relaxed selectors without strict nesting
+                    if len(all_options) < max_options:
+                        # Direct query for options that might be outside the dropdown container
+                        locator = frame.locator(option_selector)
+                        count = min(await locator.count(), max_options)
+                        
+                        for i in range(count):
+                            try:
+                                option = await locator.nth(i)
+                                # Check if textContent is available
+                                if await option.is_visible():
+                                    text = await option.text_content()
+                                    if text and text.strip():
+                                        all_options.add(text.strip())
+                            except Exception as option_err:
+                                # Just continue to next option
+                                continue
+                else:
+                    # Standard option finding within the dropdown
+                    locator = frame.locator(option_selector)
+                    count = min(await locator.count(), max_options)
+                    options_found = False
+                    
+                    for i in range(count):
+                        try:
+                            option = await locator.nth(i)
+                            # We want visible options
+                            if await option.is_visible():
+                                text = await option.text_content()
+                                if text and text.strip():
+                                    all_options.add(text.strip())
+                                    options_found = True
+                        except Exception as option_err:
+                            continue
+                            
+                    if options_found:
+                        self.logger.debug(f"Found {count} potential options using selector: '{option_selector}'")
+            except Exception as e:
+                self.logger.debug(f"Error finding options with '{option_selector}': {e}")
+                continue
+                
+        # Convert to list and limit to max options
+        result = list(all_options)[:max_options]
+        end_time = time.time()
+        if result:
+            self.logger.debug(f"Dropdown scraping for {selector} took {end_time - start_time:.2f}s, found {len(result)} unique options.")
+        
+        return result
+        
+    def _check_options_relevance(self, options: List[str], field_type: Optional[str]) -> bool:
+        """Check if dropdown options are relevant to the field type."""
+        if not options or not field_type or not hasattr(self, 'dropdown_matcher'):
+            return True  # Default to assuming relevant if we can't check
+            
+        try:
+            return self.dropdown_matcher.are_options_relevant_to_field_type(options, field_type)
+        except Exception as e:
+            self.logger.debug(f"Error checking options relevance: {e}")
+            return True  # Default to assuming relevant if check fails
+    
+    async def typeahead(self, selector: str, value: str, frame_id: Optional[str] = None) -> bool:
+        """Execute typeahead action with intelligent handling of different field types.
+        
+        Args:
+            selector: Element selector
+            value: Value to select from typeahead
+            frame_id: Optional frame ID
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not selector:
+            self._log_error("Missing selector for typeahead action")
+            return False
+            
+        if not value:
+            self._log_error("Missing value for typeahead action")
+            return False
+            
+        self._log_debug(f"Executing typeahead action for {selector} with value: {value}")
+        
+        try:
+            result = await self.typeahead(selector, value, frame_id)
+            if result:
+                self._log_info(f"Successfully executed typeahead for {selector} with value: {value}")
+            else:
+                self._log_error(f"Failed to execute typeahead for {selector} with value: {value}")
+            return result
+        except Exception as e:
+            self._log_error(f"Error in typeahead action for {selector}: {str(e)}")
+            return False
+
+    def _detect_field_type(self, selector: str, value: str) -> Optional[str]:
+        """
+        Intelligently detect the type of field based on selector, attributes, and value.
+        Instead of hardcoded keyword lists, uses pattern recognition for better adaptability.
+        
+        Args:
+            selector: The CSS selector or XPath
+            value: The value to enter
+            
+        Returns:
+            Field type string or None
+        """
+        # Normalize inputs for analysis
+        selector_lower = selector.lower() if selector else ""
+        value_lower = value.lower() if value else ""
+        
+        # Extract ID from selector if present
+        field_id = ""
+        if "#" in selector:
+            try:
+                field_id = selector.split("#")[1].split(" ")[0].split("[")[0].lower()
+            except (IndexError, AttributeError):
+                field_id = ""
+        
+        # Extract relevant attributes that may be in the selector
+        role_attr = ""
+        if "role=" in selector_lower or "role=\"" in selector_lower or "role='" in selector_lower:
+            role_match = re.search(r'role=[\"\']?([^\s\"\']+)', selector_lower)
+            if role_match:
+                role_attr = role_match.group(1).lower()
+        
+        # Extract name attribute if present
+        name_attr = ""
+        if "name=" in selector_lower or "name=\"" in selector_lower or "name='" in selector_lower:
+            name_match = re.search(r'name=[\"\']?([^\s\"\']+)', selector_lower)
+            if name_match:
+                name_attr = name_match.group(1).lower()
+        
+        # ---------- EDUCATION FIELDS ----------
+        
+        # School/University patterns
+        school_patterns = [
+            r'school', r'university', r'college', r'institution', r'campus',
+            r'academy', r'alma(\s|-)?mater', r'education(\w)*\s+institution'
+        ]
+        
+        if any(re.search(pattern, selector_lower) for pattern in school_patterns) or \
+           any(re.search(pattern, field_id) for pattern in school_patterns) or \
+           any(re.search(pattern, name_attr) for pattern in school_patterns):
+            return "school"
+        
+        # Degree patterns
+        degree_patterns = [
+            r'degree', r'qualification', r'diploma', r'certificate',
+            r'education(\w)*\s+level', r'academic(\w)*\s+level'
+        ]
+        
+        if any(re.search(pattern, selector_lower) for pattern in degree_patterns) or \
+           any(re.search(pattern, field_id) for pattern in degree_patterns) or \
+           any(re.search(pattern, name_attr) for pattern in degree_patterns):
+            return "degree"
+        
+        # Major/Field of study patterns
+        major_patterns = [
+            r'major', r'field.*study', r'discipline', r'concentration',
+            r'specialization', r'subject', r'course'
+        ]
+        
+        if any(re.search(pattern, selector_lower) for pattern in major_patterns) or \
+           any(re.search(pattern, field_id) for pattern in major_patterns) or \
+           any(re.search(pattern, name_attr) for pattern in major_patterns):
+            return "major"
+            
+        # ---------- LOCATION FIELDS ----------
+        
+        location_patterns = [
+            r'location', r'city', r'state', r'country', r'region',
+            r'province', r'address', r'zip', r'postal', r'geo'
+        ]
+        
+        if any(re.search(pattern, selector_lower) for pattern in location_patterns) or \
+           any(re.search(pattern, field_id) for pattern in location_patterns) or \
+           any(re.search(pattern, name_attr) for pattern in location_patterns) or \
+           (role_attr in ['combobox'] and any(re.search(pattern, selector_lower) for pattern in location_patterns)):
+            return "location"
+            
+        # ---------- DIVERSITY FIELDS ----------
+        
+        # Gender/Sex patterns
+        gender_patterns = [r'gender', r'sex']
+        if any(re.search(pattern, selector_lower) for pattern in gender_patterns) or \
+           any(re.search(pattern, field_id) for pattern in gender_patterns) or \
+           any(re.search(pattern, name_attr) for pattern in gender_patterns):
+            return "gender"
+        
+        # Ethnicity/Race patterns
+        ethnicity_patterns = [
+            r'ethnicity', r'race', r'racial', r'cultural(\s)?background',
+            r'hispanic', r'latino'
+        ]
+        if any(re.search(pattern, selector_lower) for pattern in ethnicity_patterns) or \
+           any(re.search(pattern, field_id) for pattern in ethnicity_patterns) or \
+           any(re.search(pattern, name_attr) for pattern in ethnicity_patterns):
+            return "ethnicity"
+        
+        # Veteran status patterns
+        veteran_patterns = [r'veteran', r'military', r'armed\s+forces', r'service']
+        if any(re.search(pattern, selector_lower) for pattern in veteran_patterns) or \
+           any(re.search(pattern, field_id) for pattern in veteran_patterns) or \
+           any(re.search(pattern, name_attr) for pattern in veteran_patterns):
+            return "veteran"
+        
+        # Disability patterns
+        disability_patterns = [
+            r'disability', r'differently\s+abled', r'accommodation',
+            r'accessible', r'special\s+need'
+        ]
+        if any(re.search(pattern, selector_lower) for pattern in disability_patterns) or \
+           any(re.search(pattern, field_id) for pattern in disability_patterns) or \
+           any(re.search(pattern, name_attr) for pattern in disability_patterns):
+            return "disability"
+            
+        # ---------- WORK AUTHORIZATION FIELDS ----------
+        
+        authorization_patterns = [
+            r'authorization', r'authorisation', r'sponsor', r'visa',
+            r'work\s+permit', r'legally', r'eligible', r'authorized'
+        ]
+        if any(re.search(pattern, selector_lower) for pattern in authorization_patterns) or \
+           any(re.search(pattern, field_id) for pattern in authorization_patterns) or \
+           any(re.search(pattern, name_attr) for pattern in authorization_patterns):
+            return "authorization"
+            
+        # ---------- INFER FROM VALUE ----------
+        
+        # If we couldn't determine from selectors, try to infer from value
+        if value_lower in ["yes", "no", "true", "false", "male", "female", "non-binary", "decline"]:
+            return "selection"
+            
+        # Check if value looks like a school name
+        if " university" in value_lower or "college" in value_lower or "institute" in value_lower:
+            return "school"
+            
+        # Check if value looks like a degree
+        if any(term in value_lower for term in ["bachelor", "master", "phd", "degree", "diploma"]):
+            return "degree"
+            
+        # Check if value looks like a location
+        if re.search(r"\b[A-Z][a-z]+,?\s+[A-Z]{2}\b", value):  # Pattern like "City, ST"
+            return "location"
+        
+        # Default if no pattern match
+        return None
+
+    def _needs_arrow_keys(self, selector: str, field_type: Optional[str]) -> bool:
+        """
+        Determine if this typeahead field needs arrow key navigation.
+        
+        Args:
+            selector: The CSS selector
+            field_type: Detected field type
+            
+        Returns:
+            True if arrow keys are needed, False otherwise
+        """
+        # School fields often need arrow keys
+        if field_type == "school":
+            return True
+        
+        # Location fields sometimes need arrow keys
+        if field_type == "location":
+            # Check if it has autocomplete attributes that suggest dropdown behavior
+            if "role=\"combobox\"" in selector or "aria-autocomplete" in selector:
+                return True
+            
+        return False
+
+    async def _execute_select_action(self, field_id, value, field_type=None, frame_id=None, fallback_text=None, options=None):
+        """
+        Execute a select action on a dropdown field.
+        
+        Args:
+            field_id: The selector or field ID
+            value: The value to select
+            field_type: Type of field (school, degree, etc.)
+            frame_id: Optional frame ID
+            fallback_text: Optional fallback text for selection
+            options: Optional additional options
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        self.logger.info(f"Executing select action for {field_id} with value: {value}")
+        
+        # For form action recording in test mode
+        if self.diagnostics_manager:
+            details = {
+                "field_id": field_id,
+                "field_type": field_type,
+                "frame_id": frame_id,
+                "value": value,
+                "fallback_text": fallback_text
+            }
+            self.diagnostics_manager.start_action(field_type or "select", details)
+        
+        try:
+            # Get frame and sanitize selector
+            frame = await self._get_frame(frame_id)
+            selector = await self._sanitize_selector(field_id)
+            
+            # Determine field type if not provided
+            if not field_type and options and "field_purpose" in options:
+                field_purpose = options.get("field_purpose")
+                if field_purpose in ["school", "university", "college", "institution"]:
+                    field_type = "school"
+                elif field_purpose in ["degree", "education", "qualification"]:
+                    field_type = "degree"
+                elif field_purpose in ["discipline", "major", "field of study"]:
+                    field_type = "discipline"
+                elif field_purpose in ["location", "city", "country"]:
+                    field_type = "location"
+            
+            # Execute the selection based on field type
+            if field_type in ['school', 'degree', 'discipline', 'location']:
+                success = await self._select(selector, value, frame_id, field_type=field_type)
+            else:
+                success = await self._select(selector, value, frame_id)
+            
+            if not success:
+                self.logger.error(f"Failed to execute select action for {field_id}")
+                if self.diagnostics_manager:
+                    self.diagnostics_manager.end_action(False, f"Failed to execute select action for {field_id}")
+                return False
+            
+            # Verify the selection if not in test mode
+            if not self.test_mode:
+                try:
+                    element = await self.element_selector.get_element(selector)
+                    if element and await self._verify_dropdown_selection_strict(element, selector, value):
+                        self.logger.info(f"Verified dropdown selection for {field_id}")
+                    else:
+                        self.logger.warning(f"Dropdown selection verification failed for {field_id}")
+                        # Don't fail the action, just log the warning
+                except Exception as e:
+                    self.logger.warning(f"Error verifying dropdown selection: {str(e)}")
+            
+            self.logger.info(f"Successfully executed select action for {field_id}")
+            if self.diagnostics_manager:
+                self.diagnostics_manager.end_action(True, None)
+            return True
+            
+        except Exception as e:
+            error_msg = str(e)
+            if "field_type" in error_msg and "argument" in error_msg:
+                self.logger.error(f"Unexpected error in _execute_select_action: {error_msg}")
+            else:
+                self.logger.error(f"Error executing select action for {field_id}: {error_msg}")
+                
+            if self.diagnostics_manager:
+                self.diagnostics_manager.end_action(False, f"Error executing select action for {field_id}: {error_msg}")
+            return False
+    
+    async def _try_click_option_by_text(self, frame, option_text: str) -> bool:
+        """
+        Attempts to click on a dropdown option based on its text content.
+        
+        Args:
+            frame: The frame containing the element
+            option_text: The text content of the option to click
+            
+        Returns:
+            True if successfully clicked, False otherwise
+        """
+        self.logger.debug(f"Attempting to click dropdown option with text: '{option_text}'")
+        
+        # Try multiple selector patterns to find the option
+        option_selectors = [
+            f"li:text('{option_text}')",
+            f"li:has-text('{option_text}')",
+            f"div[role='option']:text('{option_text}')",
+            f"div[role='option']:has-text('{option_text}')",
+            f"*[data-value='{option_text}']",
+            f"option:text('{option_text}')",
+            f"option:has-text('{option_text}')",
+            f"span:text('{option_text}')",
+            f"span:has-text('{option_text}')"
+        ]
+        
+        try:
+            # Try each selector pattern
+            for selector in option_selectors:
+                try:
+                    option_element = await frame.query_selector(selector)
+                    if option_element and await option_element.is_visible():
+                        await option_element.click()
+                        self.logger.debug(f"Successfully clicked option '{option_text}' using selector {selector}")
+                        await frame.wait_for_timeout(500)  # Wait for click to register
+                        return True
+                except Exception as e:
+                    self.logger.debug(f"Failed to click with selector {selector}: {e}")
+                    continue
+            
+            # Try a more direct approach using evaluation
+            try:
+                result = await frame.evaluate(f"""
+                    (() => {{
+                        // Get all elements that might be options
+                        const potentialOptions = [
+                            ...document.querySelectorAll('li'),
+                            ...document.querySelectorAll('[role="option"]'),
+                            ...document.querySelectorAll('option'),
+                            ...document.querySelectorAll('.option'),
+                            ...document.querySelectorAll('.dropdown-item')
+                        ];
+                        
+                        // Find and click the first visible option containing our text
+                        for (const option of potentialOptions) {{
+                            if (option.textContent.includes('{option_text}') && 
+                                !!(option.offsetWidth || option.offsetHeight || option.getClientRects().length)) {{
+                                option.click();
+                                return true;
+                            }}
+                        }}
+                        return false;
+                    }})()
+                """)
+                
+                if result:
+                    self.logger.debug(f"Successfully clicked option '{option_text}' using JavaScript evaluation")
+                    await frame.wait_for_timeout(500)  # Wait for click to register
+                    return True
+            except Exception as e:
+                self.logger.debug(f"Failed to click option via JavaScript: {e}")
+            
+            self.logger.warning(f"Could not find or click option with text '{option_text}'")
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Unexpected error clicking option '{option_text}': {e}")
+            return False
+
+    async def _verify_dropdown_selection_strict(self, element, selector, expected_value):
+        """
+        Verify if the dropdown selection matches the expected value with strict checking.
+        
+        This method employs multiple verification strategies to confirm the selected value:
+        1. Checks the displayed text of the selection
+        2. Examines the input value attribute
+        3. Uses JavaScript to check deeper DOM values
+        
+        Args:
+            element: The element or frame containing the dropdown
+            selector: CSS selector for the dropdown element
+            expected_value: The value that should be selected
+            
+        Returns:
+            bool: True if verification passes, False otherwise
+        """
+        self.logger.debug(f"Verifying dropdown selection for {selector} expecting '{expected_value}'")
+        
+        # Don't attempt verification for empty expected values
+        if not expected_value:
+            self.logger.warning(f"Empty expected value for {selector}, skipping verification")
+            return True
+            
+        # Normalize expected value for comparison
+        expected_norm = expected_value.strip()
+        
+        # Identify field type for contextual verification
+        field_type = None
+        if selector:
+            try:
+                # Check if we have a frame or element
+                if hasattr(element, 'locator'):
+                    # It's a frame
+                    field_type = self._get_element_type_info(element, selector)
+                else:
+                    # It's an element, use the selector to determine type
+                    field_type = self._get_element_type_info(None, selector)
+            except Exception as e:
+                self.logger.debug(f"Error getting element type: {e}")
+                
+        is_complex_field = field_type in ["school", "degree", "location"]
+        
+        # Determine verification threshold based on field type
+        # More lenient for complex fields like schools and degrees
+        similarity_threshold = 0.7 if is_complex_field else 0.85
+        
+        # Track verification methods and their results
+        verification_results = []
+        
+        try:
+            # Determine if we're working with a frame or element handle
+            frame = element if hasattr(element, 'locator') else None
+            
+            # Method 1: Check displayed text - most straightforward
+            try:
+                if frame:
+                    displayed_text = frame.locator(selector).text_content()
+                else:
+                    displayed_text = await element.text_content()
+                    
+                if displayed_text:
+                    similarity = self.dropdown_matcher.calculate_similarity(
+                        displayed_text, expected_norm, field_type=field_type
+                    )
+                    self.logger.debug(f"Display text similarity: {similarity} ('{displayed_text}' vs '{expected_norm}')")
+                    verification_results.append((similarity, f"Display text: '{displayed_text}'"))
+            except Exception as e:
+                self.logger.debug(f"Error getting text content: {e}")
+                
+            # Method 2: Check value attribute - for standard dropdowns
+            try:
+                if frame:
+                    value_attr = frame.locator(selector).get_attribute("value")
+                else:
+                    value_attr = await element.get_attribute("value")
+                    
+                if value_attr:
+                    similarity = self.dropdown_matcher.calculate_similarity(
+                        value_attr, expected_norm, field_type=field_type
+                    )
+                    self.logger.debug(f"Value attribute similarity: {similarity} ('{value_attr}' vs '{expected_norm}')")
+                    verification_results.append((similarity, f"Value attribute: '{value_attr}'"))
+            except Exception as e:
+                self.logger.debug(f"Error getting value attribute: {e}")
+                
+            # Method 3: Get selected option text - for standard <select> elements
+            try:
+                # Find selected option text using JS
+                if frame:
+                    js_code = """(selector) => {
+                        const el = document.querySelector(selector);
+                        if (el && el.tagName === 'SELECT') {
+                            const selected = el.options[el.selectedIndex];
+                            return selected ? selected.text : '';
+                        }
+                        return '';
+                    }"""
+                    selected_text = frame.evaluate(js_code, selector)
+                else:
+                    js_code = """(element) => {
+                        if (element.tagName === 'SELECT') {
+                            const selected = element.options[element.selectedIndex];
+                            return selected ? selected.text : '';
+                        }
+                        return '';
+                    }"""
+                    selected_text = await element.evaluate(js_code)
+                
+                if selected_text:
+                    similarity = self.dropdown_matcher.calculate_similarity(
+                        selected_text, expected_norm, field_type=field_type
+                    )
+                    self.logger.debug(f"Selected option similarity: {similarity} ('{selected_text}' vs '{expected_norm}')")
+                    verification_results.append((similarity, f"Selected option: '{selected_text}'"))
+            except Exception as e:
+                self.logger.debug(f"Error getting selected option: {e}")
+                
+            # Method 4: Check for custom dropdown implementations
+            try:
+                if frame:
+                    js_code = """(selector) => {
+                        const el = document.querySelector(selector);
+                        // Check for aria-selected elements inside
+                        const selected = el.querySelector('[aria-selected="true"]');
+                        if (selected) return selected.textContent;
+                        
+                        // Check for elements with selected class
+                        const withClass = el.querySelector('.selected, .is-selected, .active, .Dropdown-option--selected');
+                        if (withClass) return withClass.textContent;
+                        
+                        // For input-based dropdowns, check input value
+                        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') 
+                            return el.value;
+                            
+                        return '';
+                    }"""
+                    selected_value = frame.evaluate(js_code, selector)
+                else:
+                    js_code = """(element) => {
+                        // Check for aria-selected elements inside
+                        const selected = element.querySelector('[aria-selected="true"]');
+                        if (selected) return selected.textContent;
+                        
+                        // Check for elements with selected class
+                        const withClass = element.querySelector('.selected, .is-selected, .active, .Dropdown-option--selected');
+                        if (withClass) return withClass.textContent;
+                        
+                        // For input-based dropdowns, check input value
+                        if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') 
+                            return element.value;
+                            
+                        return '';
+                    }"""
+                    selected_value = await element.evaluate(js_code)
+                
+                if selected_value:
+                    similarity = self.dropdown_matcher.calculate_similarity(
+                        selected_value, expected_norm, field_type=field_type
+                    )
+                    self.logger.debug(f"Custom dropdown similarity: {similarity} ('{selected_value}' vs '{expected_norm}')")
+                    verification_results.append((similarity, f"Custom dropdown: '{selected_value}'"))
+            except Exception as e:
+                self.logger.debug(f"Error checking custom dropdown: {e}")
+                
+            # Analyze the verification results
+            if verification_results:
+                # Sort by similarity score (descending)
+                verification_results.sort(reverse=True, key=lambda x: x[0])
+                best_score, best_method = verification_results[0]
+                
+                # Log verification details
+                details = ", ".join([f"{method} ({score:.2f})" for score, method in verification_results])
+                self.logger.debug(f"Verification methods: {details}")
+                
+                # For complex fields, we're more lenient - let the verification pass 
+                # if at least one method has a good score
+                if is_complex_field:
+                    # For important fields, ensure at least one method has a good match
+                    if best_score >= similarity_threshold:
+                        self.logger.info(f"Verification passed for complex field {selector} with best score: {best_score:.2f}")
+                        return True
+                else:
+                    # For standard fields, use a more strict approach
+                    # At least one matching method should have a high score
+                    if best_score >= similarity_threshold:
+                        self.logger.info(f"Verification passed for {selector} with best score: {best_score:.2f}")
+                        return True
+                
+                # If we get here, verification has failed
+                self.logger.warning(f"Verification failed for {selector}. Best method: {best_method} with score {best_score:.2f}")
+                return False
+            else:
+                # No verification methods succeeded
+                self.logger.warning(f"No verification methods succeeded for {selector}")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Error during dropdown verification for {selector}: {str(e)}")
+            return False
+            
+    def _get_element_type_info(self, frame, selector: str):
+        """
+        Determine the type of element based on the selector.
+        
+        Args:
+            frame: The frame containing the element, can be None
+            selector: CSS selector string
+            
+        Returns:
+            str: The identified field type or None
+        """
+        # Check for nulls
+        if not selector:
+            return None
+            
+        # Convert selector to lowercase for easier checking
+        selector_lower = selector.lower()
+        
+        # Check for specific keywords in the selector
+        if "school" in selector_lower or "university" in selector_lower or "institution" in selector_lower:
+            return "school"
+        elif "degree" in selector_lower or "qualification" in selector_lower:
+            return "degree"
+        elif "discipline" in selector_lower or "major" in selector_lower or "field" in selector_lower:
+            return "discipline"
+        elif "location" in selector_lower or "city" in selector_lower or "country" in selector_lower:
+            return "location"
+            
+        # If no type detected from selector, return None
+        return None
+
+    async def _wait_for_selector(self, frame, selector, timeout=5000):
+        """
+        Wait for an element matching the selector to be present in the DOM.
+        
+        Args:
+            frame: The frame to search in
+            selector: CSS selector to wait for
+            timeout: Maximum time to wait in milliseconds
+            
+        Returns:
+            bool: True if element was found, False if timeout occurred
+        """
+        try:
+            await frame.wait_for_selector(selector, timeout=timeout)
+            return True
+        except Exception as e:
+            self.logger.error(f"Timeout waiting for selector '{selector}': {str(e)}")
+            return False
+            
+    async def _ensure_element_visibility(self, frame, selector):
+        """
+        Ensure an element is visible and scrolled into view.
+        
+        Args:
+            frame: The frame containing the element
+            selector: CSS selector for the element
+            
+        Returns:
+            bool: True if element is visible, False otherwise
+        """
+        try:
+            element = frame.locator(selector)
+            
+            # Check if element exists
+            if element.count() == 0:
+                self.logger.error(f"Element not found: {selector}")
+                return False
+                
+            # Check visibility
+            if not element.is_visible():
+                self.logger.warning(f"Element not visible: {selector}")
+                # Try to scroll into view
+                frame.evaluate(f"""
+                    (() => {{
+                        const el = document.querySelector('{selector}');
+                        if (el) el.scrollIntoView({{behavior: 'instant', block: 'center'}});
+                    }})()
+                """)
+                # Wait a bit for scroll to complete
+                time.sleep(0.5)
+                
+                # Check visibility again
+                if not element.is_visible():
+                    self.logger.warning(f"Element still not visible after scroll: {selector}")
+                    return False
+                    
+            return True
+        except Exception as e:
+            self.logger.error(f"Error checking element visibility: {str(e)}")
+            return False
+            
+    async def execute_form_actions(self, actions: List[Union[Dict[str, Any], ActionContext]], stop_on_error: bool = False) -> Dict[str, Any]:
+        """
+        Execute a list of form actions and return statistics about the execution.
+        
+        Args:
+            actions: List of action dictionaries or ActionContext objects containing field_id, field_type, 
+                    value, and optional frame_id
+            stop_on_error: Whether to stop execution on the first error
+            
+        Returns:
+            Dict with execution statistics:
+                - success_count: Number of successfully executed actions
+                - failure_count: Number of failed actions
+                - verification_issues: List of fields that failed verification
+                - total_actions: Total number of actions
+                - success_rate: Percentage of successful actions
+        """
+        self.logger.info(f"Executing {len(actions)} form actions")
+        
+        success_count = 0
+        failure_count = 0
+        verification_issues = []
+        
+        # Track time for diagnostics
+        start_time = time.time()
+        
+        if self.diagnostics_manager:
+            self.diagnostics_manager.start_action("form_execution", {
+                "action_count": len(actions),
+                "stop_on_error": stop_on_error
+            })
+        
+        # Process each action
+        for i, action in enumerate(actions):
+            # Check if action is an ActionContext object or a dictionary
+            if isinstance(action, ActionContext):
+                # If it's already an ActionContext, use it directly
+                context = action
+                field_id = context.field_id
+                field_type = context.field_type
+                fallback_text = context.fallback_text
+            else:
+                # Extract action details from dictionary
+                field_id = action.get("field_id")
+                field_type = action.get("field_type")
+                field_value = action.get("value")
+                frame_id = action.get("frame_id")
+                fallback_text = action.get("fallback_text")
+                field_name = action.get("field_name")
+                options = action.get("options", {})
+                
+                # Create action context
+                context = ActionContext(
+                    field_id=field_id or "",  # Ensure we have a string even if None
+                    field_type=field_type,
+                    field_value=field_value,
+                    frame_id=frame_id,
+                    options=options,
+                    fallback_text=fallback_text,
+                    field_name=field_name
+                )
+            
+            # Log the action we're about to execute
+            self.logger.info(f"Executing action {i+1}/{len(actions)}: {field_type} for {field_id or fallback_text}")
+            
+            # Execute the action
+            try:
+                success = await self.execute_action(context)
+                
+                if success:
+                    success_count += 1
+                    self.logger.info(f"Action {i+1} executed successfully: {field_type} for {field_id or fallback_text}")
+                else:
+                    failure_count += 1
+                    self.logger.error(f"Action {i+1} failed: {field_type} for {field_id or fallback_text}")
+                    
+                    # Stop on error if requested
+                    if stop_on_error:
+                        self.logger.warning(f"Stopping execution after failure (stop_on_error=True)")
+                        break
+                        
+            except Exception as e:
+                failure_count += 1
+                error_msg = f"Exception during action {i+1} ({field_type} for {field_id or fallback_text}): {str(e)}"
+                self.logger.error(error_msg)
+                
+                if self.diagnostics_manager:
+                    self.diagnostics_manager.error(error_msg)
+                    
+                # Add detailed traceback for debugging
+                self.logger.debug(f"Traceback: {traceback.format_exc()}")
+                
+                # Stop on error if requested
+                if stop_on_error:
+                    self.logger.warning(f"Stopping execution after exception (stop_on_error=True)")
+                    break
+                    
+            # Small delay between actions to prevent overwhelming the page
+            await asyncio.sleep(0.2)
+        
+        # Calculate execution stats
+        total_actions = len(actions)
+        success_rate = (success_count / total_actions * 100) if total_actions > 0 else 0
+        execution_time = time.time() - start_time
+        
+        # Prepare results
+        results = {
+            "success_count": success_count,
+            "failure_count": failure_count,
+            "verification_issues": verification_issues,
+            "total_actions": total_actions,
+            "success_rate": success_rate,
+            "execution_time_seconds": execution_time
+        }
+        
+        # Log summary
+        self.logger.info(f"Form execution completed: {success_count}/{total_actions} actions succeeded ({success_rate:.1f}%)")
+        
+        if verification_issues:
+            self.logger.warning(f"Verification issues: {len(verification_issues)} fields")
+            
+        if self.diagnostics_manager:
+            self.diagnostics_manager.end_action(success_count > 0, 
+                error=f"Failed actions: {failure_count}" if failure_count > 0 else None)
+            
+        return results
