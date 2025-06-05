@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from job_application_agent.core.config import Config
-from job_application_agent.tools.browser_tool import AdvancedBrowserTool
+from job_application_agent.tools.browser_tool import BrowserTool
 
 
 class FieldMatchStrategy(Enum):
@@ -55,7 +55,7 @@ class IntelligentFormFiller:
     - Robust error handling and recovery
     """
     
-    def __init__(self, config: Config, browser_tool: AdvancedBrowserTool, llm_service):
+    def __init__(self, config: Config, browser_tool: BrowserTool, llm_service):
         """Initialize the intelligent form filler."""
         self.config = config
         self.browser_tool = browser_tool

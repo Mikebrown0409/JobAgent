@@ -1,0 +1,79 @@
+{
+  "first_name": "Baby",
+  "last_name": "Gemini",
+  "email": "baby.gemini@example.com",
+  "phone": "555-123-4567",
+  "address": "123 AI Lane",
+  "city": "Virtual City",
+  "state": "CA",
+  "zip_code": "94043",
+  "country": "USA",
+  "headline": "Aspiring Autonomous Agent",
+  "summary": "A newly initialized AI agent based on the Gemini architecture, eager to learn and apply for roles. Proficient in Python and web interaction.",
+  "resume_path": "resume.pdf", 
+  "cover_letter_path": "cover_letter.pdf", 
+  "work_experience": [
+    {
+      "company": "Agent Development Inc.",
+      "title": "Test Agent",
+      "start_date": "2025-01-01",
+      "end_date": "Present",
+      "description": "Executed test plans, debugged core components, interacted with web elements.",
+      "achievements": [
+        "Successfully navigated complex web forms",
+        "Demonstrated learning capabilities in simulated environments"
+      ]
+    }
+  ],
+  "education": [
+    {
+      "institution": "Google Labs",
+      "degree": "Self-Taught",
+      "field_of_study": "Large Language Models & Automation",
+      "start_date": "2024-01-01",
+      "end_date": "Present",
+      "gpa": "N/A",
+      "achievements": [
+        "Processed extensive documentation on agent architecture",
+        "Learned core programming concepts"
+      ]
+    }
+  ],
+  "skills": [
+    "Python",
+    "Playwright",
+    "Web Scraping",
+    "Form Filling",
+    "Process Automation",
+    "Debugging",
+    "Natural Language Processing"
+  ],
+  "languages": [
+    "English (Native)"
+  ],
+  "certifications": [],
+  "online_presence": {
+    "linkedin": "https://linkedin.com/in/babygemini-placeholder",
+    "github": "https://github.com/babygemini-placeholder",
+    "portfolio": "",
+    "other": {}
+  },
+  "eeo": {
+    "gender": "Prefer not to answer",
+    "race_ethnicity": "Prefer not to answer",
+    "veteran_status": "Prefer not to answer",
+    "disability_status": "Prefer not to answer",
+    "prefer_not_to_answer": true
+  },
+  "authorization": {
+    "authorized_to_work": true,
+    "require_sponsorship": false,
+    "citizenship_status": "Virtual Entity"
+  },
+  "custom_questions": {},
+  "preferences": {
+    "salary_expectation": "Negotiable based on role and responsibilities",
+    "willing_to_relocate": false,
+    "remote_work_preference": "remote"
+  }
+} 

@@ -1,0 +1,97 @@
+{
+  "test_metadata": {
+    "timestamp": "2025-06-04T18:08:04.860644",
+    "total_jobs": 5,
+    "successful_analyses": 0,
+    "success_rate": 0.0,
+    "config": {
+      "model": "gemini-1.5-flash",
+      "stealth_mode": true,
+      "ai_content": true
+    }
+  },
+  "performance_summary": {
+    "session_id": "session_20250604_180752",
+    "session_duration": 12.009616,
+    "overall_performance": {
+      "application_success_rate": 0.0,
+      "field_fill_success_rate": 0.0,
+      "total_applications": 0,
+      "total_fields_filled": 0,
+      "ai_content_generated": 0,
+      "average_application_time": 0.0
+    },
+    "recent_performance": {
+      "success_rate_last_hour": 0.0,
+      "operations_last_hour": 5
+    },
+    "ai_performance": {},
+    "platform_breakdown": {},
+    "current_operations": 0,
+    "performance_alerts": [
+      {
+        "type": "critical",
+        "category": "success_rate",
+        "message": "Success rate critically low: 0.0%",
+        "threshold": 0.6
+      }
+    ]
+  },
+  "job_results": [
+    {
+      "job_number": 1,
+      "url": "https://jobs.therundown.ai/jobs/138054628-data-operations-manager-horizons",
+      "result": {
+        "success": false,
+        "error": "'str' object does not support the asynchronous context manager protocol",
+        "job_url": "https://jobs.therundown.ai/jobs/138054628-data-operations-manager-horizons",
+        "duration_seconds": 4.2e-05
+      },
+      "timestamp": "2025-06-04T18:07:52.850799"
+    },
+    {
+      "job_number": 2,
+      "url": "https://jobs.therundown.ai/jobs/138054629-data-operations-manager-knowledge",
+      "result": {
+        "success": false,
+        "error": "'str' object does not support the asynchronous context manager protocol",
+        "job_url": "https://jobs.therundown.ai/jobs/138054629-data-operations-manager-knowledge",
+        "duration_seconds": 0.000958
+      },
+      "timestamp": "2025-06-04T18:07:55.854401"
+    },
+    {
+      "job_number": 3,
+      "url": "https://eklm.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX/job/24553/apply/email",
+      "result": {
+        "success": false,
+        "error": "'str' object does not support the asynchronous context manager protocol",
+        "job_url": "https://eklm.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX/job/24553/apply/email",
+        "duration_seconds": 0.000192
+      },
+      "timestamp": "2025-06-04T18:07:58.856054"
+    },
+    {
+      "job_number": 4,
+      "url": "https://job-boards.greenhouse.io/remotecom/jobs/6568950003",
+      "result": {
+        "success": false,
+        "error": "'str' object does not support the asynchronous context manager protocol",
+        "job_url": "https://job-boards.greenhouse.io/remotecom/jobs/6568950003",
+        "duration_seconds": 0.000911
+      },
+      "timestamp": "2025-06-04T18:08:01.858384"
+    },
+    {
+      "job_number": 5,
+      "url": "https://boards.greenhouse.io/embed/job_app?for=allscripts&token=6546965003",
+      "result": {
+        "success": false,
+        "error": "'str' object does not support the asynchronous context manager protocol",
+        "job_url": "https://boards.greenhouse.io/embed/job_app?for=allscripts&token=6546965003",
+        "duration_seconds": 0.000346
+      },
+      "timestamp": "2025-06-04T18:08:04.860141"
+    }
+  ]
+}

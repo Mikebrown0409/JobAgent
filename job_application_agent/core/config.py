@@ -26,7 +26,7 @@ class Config(BaseModel):
     
     # LLM settings
     google_api_key: Optional[str] = Field(default=None, description="Google API key for Gemini")
-    gemini_model: str = Field(default="gemini-pro", description="Gemini model to use")
+    gemini_model: str = Field(default="gemini-1.5-flash", description="Gemini model to use")
     llm_temperature: float = Field(default=0.7, description="LLM temperature for content generation")
     llm_max_tokens: int = Field(default=1000, description="Maximum tokens for LLM responses")
     
@@ -120,7 +120,7 @@ class Config(BaseModel):
         
         # LLM settings
         config_data['google_api_key'] = os.getenv('GEMINI_API_KEY') or os.getenv('JOB_AGENT_GOOGLE_API_KEY')
-        config_data['gemini_model'] = os.getenv('JOB_AGENT_GEMINI_MODEL', 'gemini-pro')
+        config_data['gemini_model'] = os.getenv('JOB_AGENT_GEMINI_MODEL', 'gemini-1.5-flash')
         config_data['llm_temperature'] = float(os.getenv('JOB_AGENT_LLM_TEMPERATURE', '0.7'))
         config_data['llm_max_tokens'] = int(os.getenv('JOB_AGENT_LLM_MAX_TOKENS', '1000'))
         

@@ -1,4 +1,0 @@
-Lydia Brown Resume
-Senior Software Engineer with experience in React and Node.js
-Email: lydia.brown@example.com
-Phone: 1234567890

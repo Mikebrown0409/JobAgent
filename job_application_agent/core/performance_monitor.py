@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, asdict
 from pathlib import Path
 import statistics
+from contextlib import asynccontextmanager
 
 from job_application_agent.core.config import Config
 
@@ -120,6 +121,36 @@ class PerformanceMonitor:
         
         return operation_id
     
+    @asynccontextmanager
+    async def operation_timer(self, operation: str, details: Optional[Dict[str, Any]] = None):
+        """
+        Async context manager for tracking operations.
+        
+        Usage:
+            async with monitor.operation_timer('job_application') as timer:
+                timer.add_metadata('url', job_url)
+                # ... do work ...
+        """
+        operation_id = self.start_operation(operation, details)
+        
+        class OperationTimer:
+            def __init__(self, monitor, op_id):
+                self.monitor = monitor
+                self.operation_id = op_id
+                self.metadata = {}
+            
+            def add_metadata(self, key: str, value: Any):
+                self.metadata[key] = value
+        
+        timer = OperationTimer(self, operation_id)
+        
+        try:
+            yield timer
+            self.end_operation(operation_id, True, details=timer.metadata)
+        except Exception as e:
+            self.end_operation(operation_id, False, details=timer.metadata, error_message=str(e))
+            raise
+    
     def end_operation(self, operation_id: str, success: bool, 
                      details: Optional[Dict[str, Any]] = None,
                      error_message: Optional[str] = None) -> None:
@@ -214,6 +245,26 @@ class PerformanceMonitor:
             operation_stats['average_confidence'] = statistics.mean(
                 operation_stats['confidence_scores'][-100:]  # Keep last 100 scores
             )
+    
+    def record_metric(self, operation: str, duration: float, success: bool, 
+                     details: Optional[Dict[str, Any]] = None,
+                     error_message: Optional[str] = None) -> None:
+        """Record a performance metric directly."""
+        
+        metric = PerformanceMetrics(
+            timestamp=datetime.now(),
+            operation=operation,
+            duration=duration,
+            success=success,
+            details=details or {},
+            error_message=error_message
+        )
+        
+        self.metrics.append(metric)
+        self._update_real_time_stats(metric)
+        self._check_performance_thresholds(metric)
+        
+        self.logger.debug(f"Metric recorded: {operation} - {duration:.2f}s - Success: {success}")
     
     def get_performance_summary(self) -> Dict[str, Any]:
         """Get comprehensive performance summary."""
@@ -457,4 +508,16 @@ class PerformanceMonitor:
     
     def _ensure_directories(self) -> None:
         """Ensure required directories exist."""
-        Path(self.config.results_dir).mkdir(parents=True, exist_ok=True) 
+        Path(self.config.results_dir).mkdir(parents=True, exist_ok=True)
+    
+    def stop_monitoring(self) -> None:
+        """Stop monitoring - saves final data."""
+        try:
+            asyncio.create_task(self.save_performance_data())
+        except Exception as e:
+            self.logger.error(f"Error stopping monitoring: {str(e)}")
+    
+    async def close(self) -> None:
+        """Close performance monitor and save final data."""
+        await self.save_performance_data()
+        self.logger.info("Performance monitor closed") 

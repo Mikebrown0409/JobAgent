@@ -1,8 +1,13 @@
-https://job-boards.greenhouse.io/remotecom/jobs/6568950003
-https://boards.greenhouse.io/embed/job_app?for=allscripts&token=6546965003
-https://careers.basspro.com/us/en/apply?jobSeqNo=BPSHUSR225584EXTERNALENUS&utm_source=linkedin&utm_medium=phenom-feeds&step=1&stepname=personalInformation
+# Real Job Application URLs for Enterprise Testing
+# These are actual job postings that can be used for testing the AI agent
 
+# AI/Tech Companies - Real postings
+https://jobs.therundown.ai/jobs/138054628-data-operations-manager-horizons
+https://jobs.therundown.ai/jobs/138054629-data-operations-manager-knowledge
 
-require email to continue:
+# Oracle Real Job URL (from existing file)
 https://eklm.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX/job/24553/apply/email
 
+## Other Greenhouse Jobs
+https://job-boards.greenhouse.io/remotecom/jobs/6568950003
+https://boards.greenhouse.io/embed/job_app?for=allscripts&token=6546965003

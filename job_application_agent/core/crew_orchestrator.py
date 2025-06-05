@@ -31,7 +31,7 @@ except ImportError:
         def __init__(self, *args, **kwargs): pass
 
 from job_application_agent.core.config import Config
-from job_application_agent.tools.browser_tool import AdvancedBrowserTool
+from job_application_agent.tools.browser_tool import BrowserTool
 from job_application_agent.tools.intelligent_form_filler import IntelligentFormFiller
 from job_application_agent.core.llm_service import LLMService
 from job_application_agent.core.memory.profile_store import ProfileStore
@@ -73,7 +73,7 @@ class CrewOrchestrator:
         # Initialize core components
         self.llm_service = LLMService(config)
         self.profile_store = ProfileStore(config.profile_path)
-        self.browser_tool = AdvancedBrowserTool(config)
+        self.browser_tool = BrowserTool(config, self.llm_service)
         self.form_filler = IntelligentFormFiller(config, self.browser_tool, self.llm_service)
         
         # Initialize agents if CrewAI is available
@@ -119,6 +119,7 @@ class CrewOrchestrator:
             backstory="You are an expert job market analyst with deep understanding of industry trends, "
                      "company cultures, and hiring practices. You excel at extracting key information "
                      "from job postings and tailoring application approaches.",
+            llm=self.crew_llm,
             verbose=self.config.log_level == "DEBUG",
             allow_delegation=False
         )
@@ -130,6 +131,7 @@ class CrewOrchestrator:
             backstory="You are a specialist in web form analysis and user interface patterns. "
                      "You understand how to navigate complex, dynamic forms across different platforms "
                      "and can identify the best strategies for field mapping and data entry.",
+            llm=self.crew_llm,
             verbose=self.config.log_level == "DEBUG",
             allow_delegation=False
         )
@@ -141,6 +143,7 @@ class CrewOrchestrator:
             backstory="You are an expert at filling out job applications efficiently and accurately. "
                      "You understand how to handle different input types, validation requirements, "
                      "and can adapt to various application platforms seamlessly.",
+            llm=self.crew_llm,
             verbose=self.config.log_level == "DEBUG",
             allow_delegation=False
         )
@@ -152,6 +155,7 @@ class CrewOrchestrator:
             backstory="You are a meticulous quality assurance expert who ensures every application "
                      "meets the highest standards. You check for completeness, accuracy, and "
                      "optimize content for maximum impact with hiring managers.",
+            llm=self.crew_llm,
             verbose=self.config.log_level == "DEBUG",
             allow_delegation=False
         )

@@ -14,15 +14,16 @@ from job_application_agent.core.config import Config
 from job_application_agent.core.llm_service import LLMService
 from job_application_agent.core.memory.profile_store import ProfileStore
 from job_application_agent.core.memory.working_memory import WorkingMemory
-from job_application_agent.tools.browser_tool import AdvancedBrowserTool
+from job_application_agent.tools.browser_tool import BrowserTool
 from job_application_agent.tools.intelligent_form_filler import IntelligentFormFiller
 from job_application_agent.tools.registry import ToolRegistry
 from job_application_agent.core.crew_orchestrator import CrewOrchestrator, JobApplicationTask
 from job_application_agent.core.advanced_cache import AdvancedCache
 from job_application_agent.core.performance_monitor import PerformanceMonitor
+from job_application_agent.tools.browser_tool import BrowserTool
 
 
-class EnterpriseJobApplicationAgent:
+class JobApplicationAgent:
     """
     Enterprise-grade AI job application agent.
     
@@ -50,9 +51,9 @@ class EnterpriseJobApplicationAgent:
         self.performance_monitor = PerformanceMonitor(config)
         self.crew_orchestrator = CrewOrchestrator(config)
         
-        # Initialize tools
-        self.browser_tool = AdvancedBrowserTool(config)
-        self.intelligent_filler = IntelligentFormFiller(config, self.browser_tool, self.llm_service)
+        # Initialize tools (browser tool will be created when needed with cognitive capabilities)
+        self.browser_tool = None
+        self.intelligent_filler = None
         self.tool_registry = ToolRegistry()
         
         # Register tools
@@ -67,222 +68,218 @@ class EnterpriseJobApplicationAgent:
             'start_time': datetime.now()
         }
     
+    async def initialize(self) -> None:
+        """Initialize the agent and its components."""
+        self.logger.info("🚀 Initializing Cognitive Job Application Agent")
+        
+        # LLM service is already initialized in constructor
+        
+        # Memory systems and performance monitoring are already initialized
+        
+        self.logger.info("✅ Agent initialization complete")
+    
+
+    
     def _register_tools(self) -> None:
         """Register all available tools."""
-        self.tool_registry.register_tool('navigate', self.browser_tool.navigate_with_retry)
-        self.tool_registry.register_tool('analyze_page', self.browser_tool.analyze_page_structure)
-        self.tool_registry.register_tool('fill_application', self.intelligent_filler.fill_application_intelligently)
+        # Tools will be registered dynamically when browser is initialized
         self.tool_registry.register_tool('submit_application', self._submit_application_enhanced)
         self.tool_registry.register_tool('verify_submission', self._verify_submission_enhanced)
     
-    async def apply_to_job(self, job_url: str, additional_context: Optional[Dict[str, Any]] = None, 
-                          use_crew: bool = True) -> Dict[str, Any]:
-        """
-        Apply to a job using advanced AI-powered automation.
+    async def apply_to_job(self, job_url: str, additional_context: str = None) -> Dict[str, Any]:
+        """Apply to a job with enhanced cognitive automation."""
         
-        Args:
-            job_url: URL of the job application
-            additional_context: Optional additional context (job description, company info, etc.)
-            
-        Returns:
-            Comprehensive result of the job application process
-        """
-        self.session_stats['applications_attempted'] += 1
-        application_start_time = datetime.now()
+        job_start_time = datetime.now()
+        self.logger.info(f"🎯 Starting intelligent job application for: {job_url}")
         
-        try:
-            self.logger.info(f"Starting enterprise job application for: {job_url}")
-            
-            # Start performance monitoring
-            async with self.performance_monitor.start_operation('job_application') as timer:
-                timer.add_metadata('job_url', job_url)
-                timer.add_metadata('use_crew', use_crew)
+        # Performance monitoring context
+        async with self.performance_monitor.operation_timer(f"job_application_{job_url}") as timer:
+            try:
+                # Initialize browser if needed
+                if not self.browser_tool:
+                    self.browser_tool = BrowserTool(self.config, self.llm_service)
+                    await self.browser_tool.start()
                 
-                # Initialize working memory for this application
-                self.working_memory.clear()
-                self.working_memory.set_context('job_url', job_url)
-                self.working_memory.set_context('start_time', application_start_time)
+                # Step 1: Navigate to job with cognitive analysis
+                self.logger.info("🔍 Navigating to job posting...")
+                nav_result = await self.browser_tool.navigate_to_job(job_url)
                 
-                if additional_context:
-                    self.working_memory.set_context('additional_context', additional_context)
+                if not nav_result['success']:
+                    return {
+                        'success': False,
+                        'error': f"Failed to navigate to job: {nav_result.get('error', 'Unknown error')}",
+                        'job_url': job_url,
+                        'duration': (datetime.now() - job_start_time).total_seconds()
+                    }
                 
-                # Load user profile
-                profile_data = self.profile_store.get_profile_data()
-                self.working_memory.set_context('profile_data', profile_data)
+                # Log cognitive analysis
+                self.logger.info(f"📊 Page Analysis: {nav_result['reasoning']}")
+                self.logger.info(f"📄 Page Type: {nav_result['page_type']} (confidence: {nav_result['confidence']:.1%})")
                 
-                # Choose execution method
-                if use_crew:
-                    # Use multi-agent crew orchestrator
-                    task = JobApplicationTask(
-                        job_url=job_url,
-                        job_description=additional_context.get('job_description') if additional_context else None,
-                        company_info=additional_context.get('company_info') if additional_context else None
+                # Step 2: Get user profile data
+                profile_data = await self._get_enhanced_profile_data()
+                
+                # Step 3: Apply intelligently using cognitive browser
+                self.logger.info("🤖 Starting cognitive job application process...")
+                
+                application_result = await self.browser_tool.apply_to_job_intelligently(profile_data)
+                
+                # Step 4: Process results and generate summary
+                total_duration = (datetime.now() - job_start_time).total_seconds()
+                
+                # Log detailed results
+                self.logger.info(f"✅ Application completed in {total_duration:.1f}s")
+                self.logger.info(f"🎯 Success: {application_result['success']}")
+                self.logger.info(f"📝 Steps taken: {len(application_result.get('application_steps', []))}")
+                
+                # Enhanced result with cognitive insights
+                result = {
+                    'success': application_result['success'],
+                    'job_url': job_url,
+                    'duration': total_duration,
+                    'page_analysis': {
+                        'initial_page_type': nav_result['page_type'],
+                        'final_page_type': application_result.get('final_page_type'),
+                        'confidence': nav_result['confidence'],
+                        'reasoning': nav_result['reasoning']
+                    },
+                    'application_steps': application_result.get('application_steps', []),
+                    'cognitive_insights': {
+                        'navigation_intelligence': nav_result.get('next_actions', []),
+                        'form_filling_performance': {
+                            'filled_fields': sum(step.get('filled_fields', 0) for step in application_result.get('application_steps', [])),
+                            'failed_fields': sum(step.get('failed_fields', 0) for step in application_result.get('application_steps', []))
+                        }
+                    },
+                    'performance_metrics': {
+                        'analysis_time': nav_result.get('analysis_time', 0),
+                        'total_time': total_duration,
+                        'efficiency_score': self._calculate_efficiency_score(application_result, total_duration)
+                    }
+                }
+                
+                # Record performance metrics
+                self.performance_monitor.record_metric('job_application_success', 1 if application_result['success'] else 0)
+                self.performance_monitor.record_metric('job_application_duration', total_duration)
+                
+                # Take screenshot for verification
+                try:
+                    screenshot_path = await self.browser_tool.take_screenshot(
+                        f"job_application_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
                     )
-                    result = await self.crew_orchestrator.process_job_application(task)
-                else:
-                    # Use traditional single-agent workflow
-                    result = await self._execute_application_workflow(job_url, profile_data, additional_context)
-            
-                # Update statistics
-                if result.get('success'):
-                    self.session_stats['applications_successful'] += 1
-                
-                # Calculate duration
-                duration = (datetime.now() - application_start_time).total_seconds()
-                result['duration_seconds'] = duration
-                result['session_stats'] = self.session_stats.copy()
-                
-                # Add performance insights
-                result['performance_summary'] = self.performance_monitor.get_performance_summary()
-                result['cache_info'] = await self.cache.get_cache_info()
+                    if screenshot_path:
+                        result['screenshot'] = screenshot_path
+                except Exception as e:
+                    self.logger.warning(f"Screenshot failed: {str(e)}")
                 
                 return result
-            
-        except Exception as e:
-            self.logger.error(f"Job application failed: {str(e)}")
-            return {
-                'success': False,
-                'error': str(e),
-                'job_url': job_url,
-                'duration_seconds': (datetime.now() - application_start_time).total_seconds()
-            }
-        finally:
-            # Cleanup
-            await self._cleanup_session()
-    
-    async def _execute_application_workflow(self, job_url: str, profile_data: Dict[str, Any], 
-                                          additional_context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """Execute the complete application workflow with advanced features."""
-        workflow_results = []
-        
-        try:
-            # Step 1: Navigate to job application page
-            self.logger.info("Step 1: Navigating to job application page")
-            nav_result = await self.browser_tool.navigate_with_retry(job_url)
-            workflow_results.append(nav_result)
-            
-            if not nav_result.get('success'):
-                return {
-                    'success': False,
-                    'error': 'Failed to navigate to job application page',
-                    'workflow_results': workflow_results
-                }
-            
-            # Step 2: Perform comprehensive page analysis
-            self.logger.info("Step 2: Analyzing page structure with AI")
-            page_analysis = await self.browser_tool.analyze_page_structure()
-            workflow_results.append(page_analysis)
-            
-            if not page_analysis.get('success'):
-                return {
-                    'success': False,
-                    'error': 'Failed to analyze page structure',
-                    'workflow_results': workflow_results
-                }
-            
-            # Step 3: Enhanced semantic analysis using AI
-            self.logger.info("Step 3: Performing semantic analysis")
-            enhanced_analysis = await self.llm_service.analyze_form_semantically(
-                page_analysis, profile_data
-            )
-            self.working_memory.set_context('enhanced_analysis', enhanced_analysis)
-            
-            # Step 4: Intelligent form filling
-            self.logger.info("Step 4: Filling application with AI-powered mapping")
-            fill_result = await self.intelligent_filler.fill_application_intelligently(
-                profile_data, enhanced_analysis
-            )
-            workflow_results.append(fill_result)
-            
-            # Update statistics
-            if fill_result.get('success'):
-                summary = fill_result.get('summary', {})
-                self.session_stats['total_fields_filled'] += summary.get('successful_fills', 0)
                 
-                # Count AI-generated content
-                successful_fields = fill_result.get('successful_fields', [])
-                ai_generated = len([f for f in successful_fields if f.get('strategy') == 'semantic_match'])
-                self.session_stats['ai_content_generated'] += ai_generated
-            
-            # Step 5: Review and optimize filled content
-            self.logger.info("Step 5: Reviewing and optimizing filled content")
-            optimization_result = await self._optimize_filled_content(fill_result, profile_data)
-            workflow_results.append(optimization_result)
-            
-            # Step 6: Submit application
-            self.logger.info("Step 6: Submitting application")
-            submit_result = await self._submit_application_enhanced()
-            workflow_results.append(submit_result)
-            
-            if not submit_result.get('success'):
+            except Exception as e:
+                error_msg = f"Cognitive job application failed: {str(e)}"
+                self.logger.error(error_msg)
+                
+                # Record failure metrics
+                self.performance_monitor.record_metric('job_application_success', 0)
+                self.performance_monitor.record_metric('job_application_errors', 1)
+                
                 return {
                     'success': False,
-                    'error': 'Failed to submit application',
-                    'workflow_results': workflow_results,
-                    'partial_completion': True
+                    'error': error_msg,
+                    'job_url': job_url,
+                    'duration': (datetime.now() - job_start_time).total_seconds()
                 }
-            
-            # Step 7: Verify submission
-            self.logger.info("Step 7: Verifying application submission")
-            verify_result = await self._verify_submission_enhanced()
-            workflow_results.append(verify_result)
-            
-            # Generate comprehensive summary
-            return self._generate_application_summary(workflow_results, job_url)
-            
-        except Exception as e:
-            self.logger.error(f"Workflow execution failed: {str(e)}")
-            return {
-                'success': False,
-                'error': str(e),
-                'workflow_results': workflow_results
-            }
-    
-    async def _optimize_filled_content(self, fill_result: Dict[str, Any], 
-                                     profile_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Optimize and review filled content for quality assurance."""
+
+    def _calculate_efficiency_score(self, application_result: Dict[str, Any], duration: float) -> float:
+        """Calculate efficiency score based on performance metrics."""
+        
+        base_score = 100.0
+        
+        # Penalize for long duration (target: under 30 seconds)
+        if duration > 30:
+            base_score -= min(50, (duration - 30) * 2)
+        
+        # Reward for successful completion
+        if application_result.get('success'):
+            base_score += 20
+        
+        # Penalize for failed fields
+        failed_fields = sum(step.get('failed_fields', 0) for step in application_result.get('application_steps', []))
+        base_score -= failed_fields * 10
+        
+        # Reward for filled fields
+        filled_fields = sum(step.get('filled_fields', 0) for step in application_result.get('application_steps', []))
+        base_score += filled_fields * 5
+        
+        return max(0, min(100, base_score))
+
+    async def _get_enhanced_profile_data(self) -> Dict[str, Any]:
+        """Get enhanced profile data with additional context."""
+        
+        # Load base profile
+        base_profile = await self._load_user_profile()
+        
+        # Enhanced with additional intelligent defaults
+        enhanced_profile = {
+            **base_profile,
+            'experience_years': base_profile.get('experience_years', '5'),
+            'salary_expectation': base_profile.get('salary_expectation', '80000'),
+            'availability': base_profile.get('availability', 'Immediately'),
+            'willing_to_relocate': base_profile.get('willing_to_relocate', 'Yes'),
+            'work_authorization': base_profile.get('work_authorization', 'Authorized to work'),
+            'portfolio': base_profile.get('portfolio', 'https://sarahchen.dev'),
+            'github': base_profile.get('github', 'https://github.com/sarahchen'),
+            'linkedin': base_profile.get('linkedin', 'https://linkedin.com/in/sarah-chen')
+        }
+        
+        return enhanced_profile
+
+    async def _load_user_profile(self) -> Dict[str, Any]:
+        """Load user profile data."""
         try:
-            optimizations = []
-            successful_fields = fill_result.get('successful_fields', [])
-            
-            # Review AI-generated content for quality
-            for field in successful_fields:
-                if field.get('strategy') == 'semantic_match':
-                    # This was AI-generated content, let's review it
-                    field_value = field.get('value', '')
-                    if len(field_value) > 50:  # Only review substantial content
-                        # Could add additional AI review here if needed
-                        optimizations.append({
-                            'field': field.get('selector', 'unknown'),
-                            'action': 'reviewed',
-                            'content_length': len(field_value)
-                        })
-            
-            # Check for missing critical fields
-            failed_fields = fill_result.get('failed_fields', [])
-            critical_fields = ['email', 'first_name', 'last_name']
-            
-            missing_critical = []
-            for failed_field in failed_fields:
-                field_name = failed_field.get('field', '')
-                if any(critical in field_name.lower() for critical in critical_fields):
-                    missing_critical.append(field_name)
-            
+            # Try to load from profile store
+            profile_data = self.profile_store.get_profile_data()
+            if profile_data:
+                return profile_data
+                
+            # Fallback to default profile
             return {
-                'success': True,
-                'action': 'optimize_content',
-                'optimizations_applied': len(optimizations),
-                'missing_critical_fields': missing_critical,
-                'recommendations': self._generate_optimization_recommendations(missing_critical)
+                'first_name': 'Sarah',
+                'last_name': 'Chen',
+                'email': 'sarah.chen@email.com',
+                'phone': '(555) 123-4567',
+                'address': '123 Main St, San Francisco, CA 94102',
+                'experience_years': '5',
+                'linkedin': 'https://linkedin.com/in/sarah-chen',
+                'portfolio': 'https://sarahchen.dev'
             }
-            
         except Exception as e:
-            self.logger.error(f"Content optimization failed: {str(e)}")
+            self.logger.warning(f"Failed to load profile: {str(e)}, using defaults")
             return {
-                'success': False,
-                'error': str(e),
-                'action': 'optimize_content'
+                'first_name': 'Sarah',
+                'last_name': 'Chen',
+                'email': 'sarah.chen@email.com',
+                'phone': '(555) 123-4567'
             }
+
+    async def get_intelligent_page_analysis(self) -> Dict[str, Any]:
+        """Get current intelligent page analysis."""
+        
+        if not self.browser_tool:
+            return {'error': 'Browser not initialized'}
+            
+        return await self.browser_tool.get_page_analysis()
+
+    async def get_cognitive_insights(self) -> Dict[str, Any]:
+        """Get cognitive browsing insights and navigation history."""
+        
+        if not self.browser_tool:
+            return {'error': 'Browser not initialized'}
+            
+        return {
+            'navigation_history': self.browser_tool.get_navigation_history(),
+            'application_progress': self.browser_tool.get_application_progress(),
+            'current_page_analysis': await self.browser_tool.get_page_analysis()
+        }
     
     async def _submit_application_enhanced(self) -> Dict[str, Any]:
         """Enhanced application submission with multiple strategies."""
@@ -589,12 +586,10 @@ class EnterpriseJobApplicationAgent:
             if hasattr(self, 'crew_orchestrator'):
                 await self.crew_orchestrator.close()
             
-            # Close browser tool
-            await self.browser_tool.close()
-            self.logger.info("Enterprise Job Application Agent closed successfully")
+            # Close browser tool if it exists
+            if self.browser_tool:
+                await self.browser_tool.close()
+                
+            self.logger.info("🧠 Cognitive Job Application Agent closed successfully")
         except Exception as e:
-            self.logger.error(f"Error closing agent: {str(e)}")
-
-
-# Maintain backward compatibility
-JobApplicationAgent = EnterpriseJobApplicationAgent 
+            self.logger.error(f"Error closing agent: {str(e)}") 

@@ -1,0 +1,227 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Cognitive Job Application Agent - Intelligence Reference Guide
+
+## 🎯 **VISION & MISSION**
+Build the world's most intelligent job application agent that browses and applies like Claude 4- with human-level understanding, adaptive problem-solving, and never getting stuck.
+
+**Core Principle**: "How would Claude browse this page and solve this problem?"
+
+---
+
+## 🧠 **COGNITIVE BROWSING PRINCIPLES**
+
+### **1. Instant Recognition & Understanding**
+- **Like Claude**: I instantly recognize page types, purposes, and next actions
+- **Implementation**: Sub-second semantic analysis with 90%+ confidence
+- **Never**: Spend more than 1 second analyzing a page
+- **Always**: Have multiple fallback strategies ready
+
+### **2. Adaptive Problem Solving**
+- **Like Claude**: When something doesn't work, I try alternative approaches
+- **Implementation**: 3-5 fallback strategies per action
+- **Never**: Get stuck on a single approach for >10 seconds
+- **Always**: Have a "what would a human do?" escape plan
+
+### **3. Context-Aware Decision Making**
+- **Like Claude**: I understand the bigger picture and make smart decisions
+- **Implementation**: Use page context, user goals, and situational awareness
+- **Never**: Blindly follow scripts or hardcoded paths
+- **Always**: Adapt behavior based on current situation
+
+### **4. Intelligent Field Interaction**
+- **Like Claude**: I understand field purposes semantically, not just by selectors
+- **Implementation**: Multi-strategy field detection with semantic understanding
+- **Never**: Rely on single selectors or wait >5 seconds per field
+- **Always**: Use context clues, labels, and intelligent matching
+
+---
+
+## ⚡ **PERFORMANCE TARGETS**
+
+### **Speed Requirements**
+- Page Analysis: <1 second
+- Field Detection: <0.5 seconds
+- Form Filling: <0.2 seconds per field
+- Total Application: <30 seconds
+
+### **Success Metrics**
+- Page Recognition Accuracy: >90%
+- Field Filling Success: >95%
+- Overall Application Success: >80%
+- Zero Timeout Failures
+
+### **Intelligence Indicators**
+- Adapts to new page layouts automatically
+- Recovers from errors without human intervention
+- Finds elements using multiple strategies
+- Never gets "stuck" in infinite loops
+
+---
+
+## 🔧 **TECHNICAL BEST PRACTICES**
+
+### **Element Detection Strategy**
+```python
+# Multi-layer approach like Claude's reasoning:
+1. Primary Strategy: Semantic understanding + context
+2. Secondary Strategy: Pattern matching + attributes  
+3. Tertiary Strategy: Visual layout + positioning
+4. Fallback Strategy: AI-assisted fuzzy matching
+5. Last Resort: Human-like scanning patterns
+```
+
+### **Error Recovery Patterns**
+```python
+# When something fails, think like Claude:
+1. "What went wrong?" → Analyze the failure
+2. "What would work instead?" → Generate alternatives
+3. "How would a human solve this?" → Human-like approaches
+4. "Can I adapt my strategy?" → Dynamic adjustment
+5. "Should I try a different path?" → Route alternatives
+```
+
+### **Field Interaction Hierarchy**
+```python
+# Priority order for field detection:
+1. Semantic meaning (what does this field do?)
+2. Context clues (surrounding text, labels)
+3. Visual patterns (layout, styling)
+4. Attribute matching (name, id, class)
+5. AI-powered fuzzy matching
+6. Human-like exploration
+```
+
+### **Timeout Prevention**
+- **Max wait per field**: 5 seconds
+- **Max attempts per strategy**: 3
+- **Total strategies per field**: 5
+- **Absolute timeout**: Move on after 15 seconds
+
+---
+
+## 🚀 **CLAUDE-LIKE BEHAVIORS TO IMPLEMENT**
+
+### **Instant Page Understanding**
+- Recognize page type in <200ms
+- Identify primary actions immediately
+- Understand form structure at a glance
+- Detect unusual or challenging elements
+
+### **Smart Navigation**
+- Click the right buttons without hesitation
+- Handle multi-step processes intelligently
+- Navigate complex form flows
+- Adapt to unexpected page changes
+
+### **Intelligent Form Filling**
+- Map fields semantically, not by selectors
+- Generate appropriate content for open fields
+- Handle different input types smartly
+- Validate and correct entries automatically
+
+### **Error Recovery**
+- Never give up on first failure
+- Try alternative approaches automatically
+- Learn from failed attempts
+- Escalate gracefully when stuck
+
+### **Human-Like Patterns**
+- Use realistic delays and mouse movements
+- Vary interaction patterns to avoid detection
+- Handle CAPTCHAs and security measures
+- Maintain session state intelligently
+
+---
+
+## 🎯 **CURRENT IMPLEMENTATION STATUS**
+
+### ✅ **Completed Features**
+- Basic cognitive page analysis
+- Multi-strategy element detection
+- Semantic form field mapping
+- Real-time performance monitoring
+- Intelligent navigation decisions
+
+### 🚧 **Areas for Enhancement**
+- Timeout prevention mechanisms
+- Advanced error recovery
+- Multi-strategy field interaction
+- Dynamic selector generation
+- AI-powered element discovery
+
+### 🔥 **Priority Improvements**
+1. **Never Get Stuck**: Implement aggressive timeout protection
+2. **Smart Field Detection**: Enhanced multi-strategy approach
+3. **Error Recovery**: Claude-like problem solving when failures occur
+4. **Performance Optimization**: Sub-second responsiveness
+5. **Adaptive Intelligence**: Real-time strategy adjustment
+
+---
+
+## 📊 **DEBUGGING & MONITORING**
+### **Key Metrics to Track**
+- Page analysis speed (target: <500ms)
+- Field detection success rate (target: >95%)
+- Error recovery effectiveness (target: >80%)
+- Overall application completion (target: >80%)
+
+### **Warning Signs**
+- Any operation taking >10 seconds
+- Repeated failures on same element
+- Low confidence scores (<70%)
+- High timeout rates
+
+### **Success Indicators**
+- Consistent sub-second page analysis
+- High field detection accuracy
+- Successful error recovery
+- Zero infinite loops or hangs
+
+---
+
+## 🎨 **IMPLEMENTATION PHILOSOPHY**
+
+### **Think Like Claude**
+"When I encounter a web page, I instantly understand its purpose, identify the key elements, and plan my actions. I adapt when things don't work and always find alternative solutions. I never get stuck because I think creatively and use multiple approaches."
+
+### **Core Questions for Every Feature**
+1. "How would Claude handle this situation?"
+2. "What would a human do if the first approach failed?"
+3. "How can we make this more intelligent and adaptive?"
+4. "What fallback strategies would Claude use?"
+5. "How do we prevent getting stuck like the old system?"
+
+### **Success Criteria**
+- **Intelligence**: Behaves like Claude browsing the web
+- **Adaptability**: Handles any job site without hardcoding
+- **Reliability**: Never gets stuck or times out
+- **Speed**: Completes applications faster than humans
+- **Accuracy**: Fills forms correctly without errors
+
+---
+
+## 🚨 **NEVER DO THIS**
+- ❌ Wait more than 10 seconds for any single operation
+- ❌ Rely on hardcoded selectors or fixed workflows
+- ❌ Give up after first failure without trying alternatives
+- ❌ Use timeout values >30 seconds for any operation
+- ❌ Implement single-strategy approaches without fallbacks
+- ❌ Create infinite loops or recursive failures
+- ❌ Ignore performance metrics or monitoring data
+
+## ✅ **ALWAYS DO THIS**
+- ✅ Think "What would Claude do?" for every decision
+- ✅ Implement multiple fallback strategies
+- ✅ Use aggressive timeouts with smart recovery
+- ✅ Monitor performance and adapt in real-time
+- ✅ Test on real job sites, not just demos
+- ✅ Optimize for speed and intelligence
+- ✅ Build self-healing, adaptive systems
+
+---
+
+*"The goal is not just automation - it's cognitive intelligence that thinks, adapts, and solves problems like Claude."*
