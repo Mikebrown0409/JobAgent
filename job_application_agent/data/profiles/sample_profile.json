@@ -1,0 +1,91 @@
+{
+  "basics": {
+    "name": "Jane Doe",
+    "email": "jane.doe@example.com",
+    "phone": "+1-555-123-4567",
+    "location": {
+      "address": "123 Main Street",
+      "city": "San Francisco",
+      "region": "CA",
+      "postalCode": "94105",
+      "country": "US"
+    },
+    "summary": "Experienced software engineer with 5+ years in full-stack development, specializing in Python, JavaScript, and cloud technologies. Passionate about building scalable applications and leading technical teams.",
+    "website": "https://janedoe.dev",
+    "linkedin": "https://linkedin.com/in/janedoe",
+    "github": "https://github.com/janedoe"
+  },
+  "work": [
+    {
+      "company": "TechCorp Inc.",
+      "position": "Senior Software Engineer",
+      "startDate": "2021-03-01",
+      "endDate": "Present",
+      "summary": "Lead development of microservices architecture serving 1M+ users. Mentored junior developers and improved deployment pipeline efficiency by 40%.",
+      "location": "San Francisco, CA"
+    },
+    {
+      "company": "StartupXYZ",
+      "position": "Full Stack Developer",
+      "startDate": "2019-06-01",
+      "endDate": "2021-02-28",
+      "summary": "Built and maintained web applications using React, Node.js, and PostgreSQL. Implemented CI/CD pipelines and reduced bug reports by 30%.",
+      "location": "Remote"
+    },
+    {
+      "company": "DevAgency",
+      "position": "Junior Developer",
+      "startDate": "2018-01-01",
+      "endDate": "2019-05-31",
+      "summary": "Developed client websites and web applications. Collaborated with design team to implement responsive user interfaces.",
+      "location": "San Francisco, CA"
+    }
+  ],
+  "education": [
+    {
+      "institution": "University of California, Berkeley",
+      "area": "Computer Science",
+      "studyType": "Bachelor of Science",
+      "startDate": "2014-09-01",
+      "endDate": "2018-05-01",
+      "gpa": "3.7"
+    }
+  ],
+  "skills": [
+    {
+      "name": "Python",
+      "level": "Expert",
+      "keywords": ["Django", "Flask", "FastAPI", "pandas", "numpy"]
+    },
+    {
+      "name": "JavaScript",
+      "level": "Advanced",
+      "keywords": ["React", "Node.js", "TypeScript", "Vue.js"]
+    },
+    {
+      "name": "Cloud Technologies",
+      "level": "Advanced",
+      "keywords": ["AWS", "Docker", "Kubernetes", "Terraform"]
+    },
+    {
+      "name": "Databases",
+      "level": "Advanced",
+      "keywords": ["PostgreSQL", "MongoDB", "Redis", "Elasticsearch"]
+    },
+    {
+      "name": "DevOps",
+      "level": "Intermediate",
+      "keywords": ["CI/CD", "Jenkins", "GitHub Actions", "Monitoring"]
+    }
+  ],
+  "languages": [
+    {
+      "language": "English",
+      "fluency": "Native"
+    },
+    {
+      "language": "Spanish",
+      "fluency": "Conversational"
+    }
+  ]
+} 

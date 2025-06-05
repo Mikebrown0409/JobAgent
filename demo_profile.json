@@ -1,0 +1,198 @@
+{
+  "basics": {
+    "name": "Sarah Chen",
+    "email": "sarah.chen@email.com",
+    "phone": "(555) 123-4567",
+    "website": "https://sarahchen.dev",
+    "linkedin": "https://linkedin.com/in/sarahchen",
+    "github": "https://github.com/sarahchen",
+    "summary": "Experienced full-stack software engineer with 8+ years developing scalable web applications. Passionate about artificial intelligence, cloud technologies, and building solutions that impact millions of users. Led cross-functional teams to deliver complex projects on time and under budget.",
+    "location": {
+      "address": "123 Tech Avenue",
+      "city": "San Francisco",
+      "region": "California",
+      "postalCode": "94105",
+      "country": "United States"
+    }
+  },
+  "work": [
+    {
+      "company": "TechCorp",
+      "position": "Senior Software Engineer",
+      "website": "https://techcorp.com",
+      "startDate": "2020-01-15",
+      "endDate": "Present",
+      "summary": "Lead development of microservices architecture serving 50M+ users. Implemented CI/CD pipelines reducing deployment time by 80%. Mentored 5 junior developers and established engineering best practices.",
+      "highlights": [
+        "Architected and implemented scalable microservices handling 1M+ requests/day",
+        "Reduced system latency by 60% through database optimization and caching strategies",
+        "Led migration from monolithic to microservices architecture",
+        "Implemented comprehensive monitoring and alerting systems"
+      ]
+    },
+    {
+      "company": "InnovateLabs",
+      "position": "Software Engineer",
+      "website": "https://innovatelabs.com",
+      "startDate": "2018-06-01",
+      "endDate": "2019-12-31",
+      "summary": "Developed AI-powered analytics platform processing billions of data points. Built responsive web applications using React and Node.js. Collaborated with data scientists to implement machine learning models.",
+      "highlights": [
+        "Built real-time analytics dashboard serving 10K+ concurrent users",
+        "Implemented machine learning pipeline for predictive analytics",
+        "Optimized database queries improving performance by 3x",
+        "Developed REST APIs used by 20+ internal services"
+      ]
+    },
+    {
+      "company": "StartupXYZ",
+      "position": "Junior Software Developer",
+      "website": "https://startupxyz.com",
+      "startDate": "2016-07-01",
+      "endDate": "2018-05-31",
+      "summary": "Full-stack development on e-commerce platform. Worked directly with founders to build MVP and scale to 100K+ users. Gained experience with agile development and startup culture.",
+      "highlights": [
+        "Built customer-facing e-commerce platform from scratch",
+        "Implemented payment processing and fraud detection systems",
+        "Developed mobile-responsive UI with 99.9% uptime",
+        "Collaborated with design team to implement pixel-perfect interfaces"
+      ]
+    }
+  ],
+  "education": [
+    {
+      "institution": "Stanford University",
+      "area": "Computer Science",
+      "studyType": "Master of Science",
+      "startDate": "2014-09-01",
+      "endDate": "2016-06-01",
+      "gpa": "3.8",
+      "courses": [
+        "Machine Learning",
+        "Distributed Systems",
+        "Advanced Algorithms",
+        "Human-Computer Interaction"
+      ]
+    },
+    {
+      "institution": "University of California, Berkeley",
+      "area": "Computer Science",
+      "studyType": "Bachelor of Science",
+      "startDate": "2010-08-01",
+      "endDate": "2014-05-01",
+      "gpa": "3.7",
+      "courses": [
+        "Data Structures",
+        "Software Engineering",
+        "Computer Networks",
+        "Database Systems"
+      ]
+    }
+  ],
+  "skills": [
+    {
+      "name": "Programming Languages",
+      "level": "Expert",
+      "keywords": ["Python", "JavaScript", "TypeScript", "Java", "Go", "SQL"]
+    },
+    {
+      "name": "Web Technologies",
+      "level": "Expert", 
+      "keywords": ["React", "Node.js", "Express", "Next.js", "HTML5", "CSS3", "REST APIs", "GraphQL"]
+    },
+    {
+      "name": "Cloud & DevOps",
+      "level": "Advanced",
+      "keywords": ["AWS", "Docker", "Kubernetes", "CI/CD", "Terraform", "Jenkins", "GitHub Actions"]
+    },
+    {
+      "name": "Databases",
+      "level": "Advanced",
+      "keywords": ["PostgreSQL", "MongoDB", "Redis", "Elasticsearch", "MySQL"]
+    },
+    {
+      "name": "AI/ML",
+      "level": "Intermediate",
+      "keywords": ["TensorFlow", "PyTorch", "Scikit-learn", "Natural Language Processing", "Computer Vision"]
+    }
+  ],
+  "projects": [
+    {
+      "name": "AI-Powered Job Matching Platform",
+      "description": "Built an intelligent job matching system using NLP and machine learning to connect candidates with relevant opportunities",
+      "highlights": [
+        "Processed 1M+ job postings using NLP techniques",
+        "Achieved 85% accuracy in job-candidate matching",
+        "Served 50K+ active users with personalized recommendations"
+      ],
+      "keywords": ["Python", "TensorFlow", "NLP", "React", "PostgreSQL"],
+      "startDate": "2021-01-01",
+      "endDate": "2021-12-01",
+      "url": "https://github.com/sarahchen/job-matcher"
+    },
+    {
+      "name": "Real-time Analytics Dashboard",
+      "description": "Developed a scalable real-time analytics platform for monitoring business metrics and user behavior",
+      "highlights": [
+        "Handled 10M+ events per day with sub-second latency",
+        "Built interactive dashboards with custom visualizations",
+        "Implemented real-time alerting system"
+      ],
+      "keywords": ["Node.js", "React", "Socket.io", "MongoDB", "D3.js"],
+      "startDate": "2020-03-01",
+      "endDate": "2020-10-01",
+      "url": "https://github.com/sarahchen/analytics-dashboard"
+    }
+  ],
+  "certificates": [
+    {
+      "name": "AWS Certified Solutions Architect",
+      "date": "2022-03-15",
+      "issuer": "Amazon Web Services",
+      "url": "https://aws.amazon.com/certification/"
+    },
+    {
+      "name": "Google Cloud Professional Developer",
+      "date": "2021-08-20",
+      "issuer": "Google Cloud",
+      "url": "https://cloud.google.com/certification/"
+    }
+  ],
+  "languages": [
+    {
+      "language": "English",
+      "fluency": "Native speaker"
+    },
+    {
+      "language": "Mandarin Chinese",
+      "fluency": "Native speaker"
+    },
+    {
+      "language": "Spanish",
+      "fluency": "Conversational"
+    }
+  ],
+  "interests": [
+    {
+      "name": "Technology",
+      "keywords": ["Artificial Intelligence", "Cloud Computing", "Open Source", "Blockchain"]
+    },
+    {
+      "name": "Activities",
+      "keywords": ["Rock Climbing", "Photography", "Cooking", "Travel"]
+    }
+  ],
+  "references": [
+    {
+      "name": "Dr. Michael Rodriguez",
+      "reference": "Sarah is an exceptional engineer with deep technical expertise and strong leadership skills. She consistently delivers high-quality solutions and mentors team members effectively.",
+      "position": "Engineering Manager",
+      "company": "TechCorp"
+    }
+  ],
+  "meta": {
+    "canonical": "https://sarahchen.dev/resume",
+    "version": "v1.0.0",
+    "lastModified": "2024-01-15T10:00:00.000Z"
+  }
+} 
